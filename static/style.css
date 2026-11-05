@@ -2072,8 +2072,6 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 
 /* Set Radio mengisi layar sampai bawah: tanpa ruang kosong 60px di bawah. */
 .pages-wrap:has(> .page-setradio:not([hidden])){ padding-bottom: 16px; }
-/* Auto Translate: kotak teks lebih pendek supaya Log/Console tidak jauh di bawah. */
-.page-translate .textarea{ min-height: 120px; }
 
 /* ---- REKAMAN: [daftar | detail], pas satu layar (fitRecords di script.js) ---- */
 .pages-wrap:has(> .page-records:not([hidden])){ padding-bottom: 16px; }
@@ -2157,43 +2155,6 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
   color: #ffd0d0;
 }
 .btn-danger:hover{ background: rgba(255, 95, 95, 0.2); }
-
-/* ---- AUTO TRANSLATE: [bahasa + sumber + log | teks Papua + terjemahan], pas satu layar ---- */
-.pages-wrap:has(> .page-translate:not([hidden])){ padding-bottom: 16px; }
-.translate-layout{
-  display: grid;
-  grid-template-columns: 440px minmax(0, 1fr);
-  gap: 12px;
-  max-width: 1400px;
-  width: 100%;
-  margin: 0 auto;
-}
-.translate-col{ display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-.translate-col > .panel{ margin: 0; }
-.translate-lang-panel{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.translate-lang-panel .panel-title{ margin: 0; }
-.translate-lang-panel .device-select{ width: 180px; }
-.source-tabs{
-  display: flex;
-  gap: 3px;
-  padding: 3px;
-  margin-bottom: 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: 999px;
-  background: rgba(0,0,0,0.25);
-}
-.source-tabs .radio-tab{ flex: 1; }
-.source-pane{ display: flex; flex-direction: column; gap: 10px; }
-.source-pane[hidden]{ display: none; }
-.source-pane .panel-hint{ margin: 0; }
-.rms-row{ display: flex; align-items: center; gap: 8px; }
-.rms-row .status-pill{ margin-left: auto; }
-.panel-log{ flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-.panel-log .log-box{ flex: 1 1 auto; height: auto; min-height: 80px; }
-.translate-text-panel{ flex: 1 1 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
-.translate-text-panel .panel-title{ margin: 0; }
-.page-translate .translate-text-panel .textarea{ flex: 1 1 auto; min-height: 100px; resize: none; }
-.translate-actions{ display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 /* Menu aktif: cyan terang + teks gelap (kontras ±10:1; sebelumnya 3,7:1). */
 .nav-pill[aria-selected="true"],

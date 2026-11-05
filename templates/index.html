@@ -452,102 +452,119 @@
 <!-- PAGE: AUTO TRANSLATE -->
 <!-- ============================================================ -->
 <section class="page page-translate" id="pageTranslate" role="tabpanel" hidden>
-  <!-- Auto Translate pas satu layar (fitTranslate di script.js):
-       kiri = bahasa, sumber suara (radio / unggah) dan log; kanan = teks Papua & terjemahan. -->
-  <div class="translate-layout">
-    <div class="translate-col">
-      <div class="panel translate-lang-panel">
-        <h2 class="panel-title">Bahasa Papua</h2>
-        <select id="papuaLangSelect" class="device-select" aria-label="Bahasa Papua">
+
+  <div class="console">
+
+    <section class="col col-left">
+      <div class="panel">
+        <h2 class="panel-title">
+          Radio Input Device
+        </h2>
+
+        <div class="device-row">
+          <select id="deviceSelect" class="device-select">
+            <option>Mencari perangkat audio…</option>
+          </select>
+          <button type="button" class="btn btn-icon" id="refreshDevices" title="Segarkan daftar perangkat" aria-label="Segarkan daftar perangkat">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4v5h5M20 20v-5h-5M4.5 9A8 8 0 0 1 19 8m.5 7A8 8 0 0 1 5 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+
+        <div class="rms-row">
+          <span class="rms-label"><span class="dot dot-red"></span>RMS Level:</span>
+          <span class="rms-value" id="rmsValue">0%</span>
+        </div>
+
+        <div class="meter-track">
+          <div class="meter-fill" id="meterFill"></div>
+        </div>
+        <div class="status-row">
+          <span class="status-pill" id="statusPill">Ambai Siap</span>
+        </div>
+
+        <div class="btn-pair">
+          <button type="button" class="btn btn-primary" id="playRadioBtn">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 5v14l12-7L7 5z" fill="currentColor"/></svg>
+            Rekam &amp; Translate Audio
+          </button>
+          <button type="button" class="btn btn-secondary" id="recordSaveBtn">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 21v-8H7v8M7 3v5h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Rekam &amp; Simpan Audio
+          </button>
+        </div>
+        <button type="button" class="btn btn-secondary btn-block" id="playLastRecordingBtn" hidden style="margin-top:10px;">▶ Putar Audio Papua</button>
+      </div>
+
+      <div class="panel">
+        <h2 class="panel-title">Unggah Audio (WAV / MP3)</h2>
+
+        <div class="file-row">
+          <label class="file-btn" for="audioFile">
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            Choose File
+          </label>
+          <input type="file" id="audioFile" accept=".wav,.mp3,audio/*" hidden>
+          <span class="file-name" id="fileName">Belum ada berkas dipilih</span>
+        </div>
+
+        <div class="btn-pair">
+          <button type="button" class="btn btn-secondary" id="playUploadBtn">Play Audio Upload</button>
+          <button type="button" class="btn btn-primary" id="uploadTranslateBtn">Upload &amp; Translate Audio</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2 class="panel-title">Teks Papua → Indonesia</h2>
+        <textarea id="papuaTextInput" class="textarea" placeholder="Ketik teks papua di sini…"></textarea>
+        <button type="button" class="btn btn-primary btn-block" id="translateTextBtn">Translate Text (Papua → Indonesia)</button>
+      </div>
+    </section>
+
+    <section class="col col-right">
+      <div class="panel">
+        <h2 class="panel-title">Pilih Bahasa Papua</h2>
+        <div class="manual-row" style="margin-bottom:10px;">
+          <input type="text" id="papuaLangSearch" class="input" placeholder="Cari & ketik bahasa...">
+        </div>
+        <select id="papuaLangSelect" class="device-select">
           <option value="ambai" selected>Ambai</option>
           <option value="biak">Biak</option>
         </select>
       </div>
 
-      <div class="panel">
-        <div class="source-tabs" role="tablist" aria-label="Sumber suara">
-          <button type="button" class="radio-tab active" id="sourceTabRadio" role="tab" aria-selected="true" data-source-tab="radio">Rekam dari radio</button>
-          <button type="button" class="radio-tab" id="sourceTabUpload" role="tab" aria-selected="false" data-source-tab="upload">Unggah audio</button>
-        </div>
-
-        <div class="source-pane" id="sourceRadioPane">
-          <label class="manual-label" for="deviceSelect">Perangkat input radio</label>
-          <div class="device-row">
-            <select id="deviceSelect" class="device-select">
-              <option>Mencari perangkat audio…</option>
-            </select>
-            <button type="button" class="btn btn-icon" id="refreshDevices" title="Segarkan daftar perangkat" aria-label="Segarkan daftar perangkat">
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4v5h5M20 20v-5h-5M4.5 9A8 8 0 0 1 19 8m.5 7A8 8 0 0 1 5 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            </button>
-          </div>
-          <div class="rms-row">
-            <span class="rms-label"><span class="dot dot-red"></span>Level sinyal</span>
-            <span class="rms-value" id="rmsValue">0%</span>
-            <span class="status-pill" id="statusPill">Ambai Siap</span>
-          </div>
-          <div class="meter-track">
-            <div class="meter-fill" id="meterFill"></div>
-          </div>
-          <div class="btn-pair">
-            <button type="button" class="btn btn-primary" id="playRadioBtn">
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 5v14l12-7L7 5z" fill="currentColor"/></svg>
-              Rekam &amp; Terjemahkan
-            </button>
-            <button type="button" class="btn btn-secondary" id="recordSaveBtn">
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 21v-8H7v8M7 3v5h8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              Rekam &amp; Simpan
-            </button>
-          </div>
-          <button type="button" class="btn btn-secondary btn-block" id="playLastRecordingBtn" hidden>▶ Putar rekaman terakhir</button>
-          <p class="panel-hint">Semua rekaman tersimpan otomatis di halaman <b>Rekaman</b>.</p>
-        </div>
-
-        <div class="source-pane" id="sourceUploadPane" hidden>
-          <div class="file-row">
-            <label class="file-btn" for="audioFile">
-              <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 16V4m0 0-4 4m4-4 4 4M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-              Pilih berkas
-            </label>
-            <input type="file" id="audioFile" accept=".wav,.mp3,audio/*" hidden>
-            <span class="file-name" id="fileName">Belum ada berkas dipilih</span>
-          </div>
-          <p class="panel-hint">Format WAV, MP3, FLAC atau OGG.</p>
-          <div class="btn-pair">
-            <button type="button" class="btn btn-secondary" id="playUploadBtn">Putar audio</button>
-            <button type="button" class="btn btn-primary" id="uploadTranslateBtn">Unggah &amp; Terjemahkan</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="panel panel-log">
-        <div class="log-header">
-          <h2 class="panel-title">Log</h2>
-          <button type="button" class="btn btn-ghost btn-sm" id="clearLogBtn">Bersihkan</button>
-        </div>
-        <div class="log-box" id="logBox" role="log" aria-live="polite"></div>
-      </div>
-    </div>
-
-    <div class="translate-col">
-      <div class="panel translate-text-panel">
-        <h2 class="panel-title">Teks bahasa Papua</h2>
-        <textarea id="whisperOutput" class="textarea" placeholder="Hasil rekaman atau unggahan muncul di sini. Bisa juga diketik langsung…" aria-label="Teks bahasa Papua"></textarea>
-        <button type="button" class="btn btn-primary btn-block" id="translateTextBtn">Terjemahkan teks ini</button>
-      </div>
-
-      <div class="panel translate-text-panel">
-        <h2 class="panel-title">Terjemahan bahasa Indonesia</h2>
-        <textarea id="translationOutput" class="textarea textarea-readout" readonly placeholder="Hasil terjemahan muncul di sini…" aria-label="Terjemahan bahasa Indonesia"></textarea>
-        <div class="translate-actions">
+      <div class="panel panel-split panel-split-vertical">
+        <div class="split-pane">
+          <h2 class="panel-title">Input / Whisper (Papua text)</h2>
+          <textarea id="whisperOutput" class="textarea textarea-readout" readonly placeholder="Hasil whisper dari radio atau teks papua…"></textarea>
           <label class="checkbox-row">
             <input type="checkbox" id="autoTtsToggle" checked>
-            <span>Bacakan otomatis setelah diterjemahkan</span>
+            <span>Auto TTS Indonesia setelah translate</span>
           </label>
-          <button type="button" class="btn btn-secondary" id="playTtsBtn">Bacakan terjemahan</button>
+        </div>
+
+        <div class="split-divider" aria-hidden="true">
+          <span class="divider-icon">⇄</span>
+        </div>
+
+        <div class="split-pane">
+          <h2 class="panel-title">Output Bahasa Indonesia</h2>
+          <textarea id="translationOutput" class="textarea textarea-readout" readonly placeholder="Hasil terjemahan Indonesia…"></textarea>
+          <button type="button" class="btn btn-secondary btn-block" id="playTtsBtn">Play TTS Indonesia (dari text output)</button>
         </div>
       </div>
-    </div>
+    </section>
+
   </div>
+
+  <!-- Log / Console Full Width di Paling Bawah -->
+  <div class="panel panel-log">
+    <div class="log-header">
+      <h2 class="panel-title">Log / Console</h2>
+      <button type="button" class="btn btn-ghost" id="clearLogBtn">Bersihkan</button>
+    </div>
+    <div class="log-box" id="logBox" role="log" aria-live="polite"></div>
+  </div>
+
 </section>
 
 <!-- ============================================================ -->

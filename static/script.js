@@ -193,7 +193,6 @@
       navButtons[id].setAttribute('aria-selected', active ? 'true' : 'false');
     });
     if (pageId === 'pageSetRadio') fitSetRadio();
-    if (pageId === 'pageTranslate') fitTranslate();
     if (pageId === 'pageRecords'){
       fitRecords();
       loadRecords();
@@ -220,19 +219,13 @@
     resizeScopeCanvases();
   }
 
-  // Auto Translate pas satu layar; log dan kotak teks mengisi sisa tinggi.
-  function fitTranslate(){
-    if (pages.pageTranslate.hidden) return;
-    fitHeightToWindow(document.querySelector('.translate-layout'));
-  }
-
   // Halaman Rekaman juga pas satu layar; tabelnya bergulir di dalam kotaknya.
   function fitRecords(){
     if (pages.pageRecords.hidden) return;
     fitHeightToWindow(document.querySelector('.records-layout'));
   }
   // Setelah applyScale() di index.html (juga dijadwalkan lewat requestAnimationFrame).
-  window.addEventListener('resize', () => requestAnimationFrame(() => { fitSetRadio(); fitTranslate(); fitRecords(); }));
+  window.addEventListener('resize', () => requestAnimationFrame(() => { fitSetRadio(); fitRecords(); }));
 
   Object.entries(navButtons).forEach(([id, btn]) => {
     btn.addEventListener('click', () => showPage(id));
@@ -1256,6 +1249,7 @@
   function resetTranslateWorkspace(){
     whisperOutput.value = '';
     translationOutput.value = '';
+    if (papuaTextInput) papuaTextInput.value = '';
     if (audioFile) audioFile.value = '';
     if (fileNameEl) fileNameEl.textContent = 'Belum ada berkas dipilih';
     uploadPreviewUrl = null;
@@ -1399,41 +1393,21 @@
     }
   });
 
-  /* ---- Tab sumber suara di Auto Translate (diingat per browser) ---- */
-  const SOURCE_TAB_STORAGE_KEY = 'translateSourceTab';
-  function showSourceTab(tab){
-    document.querySelectorAll('[data-source-tab]').forEach((btn) => {
-      const on = btn.dataset.sourceTab === tab;
-      btn.classList.toggle('active', on);
-      btn.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    $('sourceRadioPane').hidden = tab !== 'radio';
-    $('sourceUploadPane').hidden = tab !== 'upload';
-    try{ localStorage.setItem(SOURCE_TAB_STORAGE_KEY, tab); } catch(err){ /* abaikan */ }
-  }
-  document.querySelectorAll('[data-source-tab]').forEach((btn) => {
-    btn.addEventListener('click', () => showSourceTab(btn.dataset.sourceTab));
-  });
-  try{
-    const savedSourceTab = localStorage.getItem(SOURCE_TAB_STORAGE_KEY);
-    if (savedSourceTab === 'radio' || savedSourceTab === 'upload') showSourceTab(savedSourceTab);
-  } catch(err){ /* abaikan */ }
-
   /* ============================================================
      TEXT TRANSLATE — POST /translate-text
      ============================================================ */
-  // Kotak "Teks bahasa Papua" dipakai bersama: diisi hasil rekaman/unggahan,
-  // dan bisa diketik atau diperbaiki sendiri sebelum diterjemahkan.
+  const papuaTextInput = $('papuaTextInput');
   const translateTextBtn = $('translateTextBtn');
 
   translateTextBtn.addEventListener('click', async () => {
-    const text = whisperOutput.value.trim();
+    const text = papuaTextInput.value.trim();
     if (!text){
-      log('Isi teks bahasa Papua dulu (rekam, unggah, atau ketik) sebelum menerjemahkan.', 'err');
-      whisperOutput.focus();
+      log('Ketik teks Papua sebelum menerjemahkan.', 'err');
+      papuaTextInput.focus();
       return;
     }
 
+    whisperOutput.value = text;
     translateTextBtn.disabled = true;
     statusPill.textContent = 'Menerjemahkan…';
     statusPill.classList.add('busy');
