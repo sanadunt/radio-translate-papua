@@ -19,6 +19,8 @@ Cara menjalankan (klik dua kali, tanpa memasang Python): lihat **[CARA-MENJALANK
 | `webusb_audio_bridge.py` | Audio Radio V2 dari browser untuk Rekam & Translate |
 | `templates/`, `static/` | Frontend |
 | `listener_kit/` | Build Listener Kit (AGPL-3.0, lihat `listener_kit/SOURCE.md`) |
+| `updater.py`, `rilis.sh` | Update otomatis dari GitHub Releases (lihat RILIS.md) |
+| `model_setup.py` | Wizard Model AI: cek file model, simpan setelan |
 | `packaging/` | Persiapan installer .exe/.dmg/.deb (belum diuji) |
 | `tests/` | `npm test`, `npm run test:py`, `npm run test:e2e` |
 

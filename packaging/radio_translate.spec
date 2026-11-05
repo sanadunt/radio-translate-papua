@@ -19,7 +19,7 @@ datas = [
     (str(ROOT / "static"), "static"),
     (str(ROOT / "listener_kit"), "listener_kit"),
 ]
-hiddenimports = ["app_faster_whisper_lokal", "web888_client", "hackrf_client", "webusb_audio_bridge", "model_setup"]
+hiddenimports = ["app_faster_whisper_lokal", "web888_client", "hackrf_client", "webusb_audio_bridge", "model_setup", "updater"]
 # matplotlib hanya dipakai noisereduce.plotting (tidak pernah dimuat aplikasi).
 excludes = ["matplotlib", "tkinter", "IPython", "pytest"]
 

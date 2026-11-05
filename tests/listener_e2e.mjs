@@ -156,11 +156,18 @@ async function main() {
 		check('kit siap (receiver:hello)', ready);
 		await page.evaluate(INSTRUMENT);
 
-		// Keluar lalu masuk lagi ke sumber webusb: host:subscribe false lalu true.
-		await expectResult(page, 'subscribe', 'host:subscribe', `${selectSource('network')}; ${selectSource('webusb')}`);
-		await page.waitFor(`window.__kit.results.filter(r => r.type === 'host:subscribe').length >= 2`);
-		const subs = await page.evaluate(`window.__kit.results.filter(r => r.type === 'host:subscribe').map(r => r.code)`);
-		check('subscribe (berhenti, lalu langganan lagi)', subs.length >= 2 && subs.every((c) => c === 'OK'), subs.join(', '));
+		// Tata letak: panel radio kit menggantikan spektrum halaman dan pas satu layar.
+		const layout = await page.evaluate(`(() => {
+			const frame = document.getElementById('listenerFrame').getBoundingClientRect();
+			return {
+				scopeHidden: getComputedStyle(document.querySelector('.scope-row')).display === 'none',
+				frameHeight: Math.round(frame.height),
+				pageScroll: document.documentElement.scrollHeight - innerHeight,
+			};
+		})()`);
+		check('Radio V2: spektrum halaman disembunyikan, panel radio menggantikannya', layout.scopeHidden && layout.frameHeight >= 400,
+			`tinggi panel ${layout.frameHeight}px`);
+		check('Set Radio pas satu layar (tanpa scroll halaman)', layout.pageScroll <= 4, `scroll ${layout.pageScroll}px`);
 
 		await page.evaluate(`document.getElementById('listenerMock').checked = true`);
 		await expectResult(page, 'start {mock: true, listen: true} (klik operator)', 'host:start', () => realClick(page, 'listenerStartBtn'), 20_000);
@@ -168,10 +175,7 @@ async function main() {
 		check('audio VFO aktif (tidak ditahan browser)', audio, await page.evaluate(`document.querySelector('#listenerStatus dd:nth-of-type(6)')?.textContent`));
 		const gains = await page.evaluate(resultOf('host:gains'));
 		check('gains (dikirim sebelum start)', gains?.code === 'OK', gains?.code);
-		const spectrum = await page.waitFor(`(window.__kit.types['receiver:spectrum'] || 0) >= 3`);
-		check('receiver:spectrum datang', spectrum, `${await page.evaluate(`window.__kit.types['receiver:spectrum'] || 0`)} frame`);
-		const axis = await page.evaluate(`document.getElementById('axisCenter').textContent`);
-		check('spektrum digambar di kanvas halaman (sumbu frekuensi)', /155\.9500/.test(axis), axis);
+		check('tanpa langganan spektrum (spektrum tampil di panel kit)', await page.evaluate(`!window.__kit.types['receiver:spectrum']`));
 		check('label MOCK tampil di toolbar', /MOCK/.test(await page.evaluate(`document.getElementById('spectrumStatusPill').textContent`)));
 
 		await expectResult(page, 'tala dekat (geser VFO)', 'host:vfo', `${setValue('freqManual', '160.000')}; ${click('freqSetBtn')}`);
@@ -213,6 +217,9 @@ async function main() {
 		await sleep(1500);
 		const audioLater = await page.evaluate(`window.__kit.types['receiver:audio'] || 0`);
 		check('setelah berhenti, kit berhenti mengirim audio', audioLater === audioAfterStop, `${audioLater - audioAfterStop} pesan baru`);
+		// Langganan audio dibuka saat mulai rekam dan ditutup lagi sesudahnya.
+		const subs = await page.evaluate(`window.__kit.results.filter(r => r.type === 'host:subscribe').map(r => r.code)`);
+		check('subscribe audio (buka saat rekam, tutup sesudahnya)', subs.length >= 2 && subs.every((c) => c === 'OK'), subs.join(', '));
 		await page.evaluate(click('navSetRadioBtn'));
 
 		await expectResult(page, 'stop', 'host:stop', click('listenerStopBtn'));

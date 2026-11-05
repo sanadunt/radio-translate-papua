@@ -27,22 +27,25 @@
       <span class="brand-title">Radio RTI Group</span>
       <span class="brand-subtitle">Auto Translate Bahasa Papua</span>
     </div>
+
+    <!-- Navigasi di baris yang sama dengan judul (hemat tinggi layar). -->
+    <nav class="top-nav-bar" role="tablist" aria-label="Navigasi halaman">
+      <button type="button" class="nav-home" id="navHomeBtn" role="tab" aria-selected="true" title="Home" aria-label="Home">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 11.5 12 4l8 7.5M6 10v9a1 1 0 0 0 1 1h3v-5h4v5h3a1 1 0 0 0 1-1v-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button type="button" class="nav-pill" id="navSetRadioBtn" role="tab" aria-selected="false">Set Radio</button>
+      <button type="button" class="nav-pill" id="navTranslateBtn" role="tab" aria-selected="false">Auto Translate</button>
+    </nav>
+
     <div class="brand-status">
       <span class="brand-dot" id="brandDot" title="Status backend"></span>
       <span class="brand-label" id="brandLabel">TRANSLATE</span>
     </div>
     <!-- Hanya tampil saat dijalankan lewat launcher/installer (GET /app/info). -->
+    <button type="button" class="btn btn-primary btn-sm app-quit-btn" id="appUpdateBtn" hidden>Update</button>
     <button type="button" class="btn btn-ghost btn-sm app-quit-btn" id="appSetupBtn" hidden>Model AI</button>
     <button type="button" class="btn btn-ghost btn-sm app-quit-btn" id="appQuitBtn" hidden>Tutup Aplikasi</button>
   </div>
-
-  <nav class="top-nav-bar" role="tablist" aria-label="Navigasi halaman">
-    <button type="button" class="nav-home" id="navHomeBtn" role="tab" aria-selected="true" title="Home" aria-label="Home">
-      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 11.5 12 4l8 7.5M6 10v9a1 1 0 0 0 1 1h3v-5h4v5h3a1 1 0 0 0 1-1v-9" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-    </button>
-    <button type="button" class="nav-pill" id="navSetRadioBtn" role="tab" aria-selected="false">Set Radio</button>
-    <button type="button" class="nav-pill" id="navTranslateBtn" role="tab" aria-selected="false">Auto Translate</button>
-  </nav>
 </header>
 
 <main class="pages-wrap">
@@ -122,6 +125,47 @@
       </button>
 
       <div class="sidebar-body" id="sidebarBody">
+        <!-- SUMBER RADIO (paling atas: pilihan yang paling sering dipakai) -->
+        <div class="fbw-panel fbw-panel-source">
+          <span class="preset-label">Sumber Radio</span>
+          <div class="rtltcp-status-row">
+            <span class="dot" id="rtltcpDot"></span>
+            <span id="rtltcpStatusText">Belum tersambung</span>
+          </div>
+          <div class="rtltcp-config-grid">
+            <label class="manual-label" for="radioSourceSelect">Perangkat</label>
+            <select id="radioSourceSelect" class="device-select">
+              <option value="network" selected>Radio V1 · Web-888 / rtl_tcp (jaringan)</option>
+              <option value="webusb">Radio V2 · USB di browser</option>
+              <option value="hackrf">Radio V2 · USB lewat server</option>
+              <option value="hackrf-sim">Radio V2 · simulasi server (tanpa perangkat)</option>
+            </select>
+          </div>
+          <p class="panel-hint" id="webusbSourceConfig" hidden>
+            Radio dijalankan di browser lewat WebUSB. Kontrol lengkap (Mulai RX, gain, wide scan, marker)
+            ada di panel Radio V2 di bawah spektrum.
+          </p>
+          <div class="rtltcp-config-grid" id="networkSourceConfig">
+            <label class="manual-label" for="rtltcpHost">Host</label>
+            <input type="text" id="rtltcpHost" class="input" value="127.0.0.1">
+            <label class="manual-label" for="rtltcpPort">Port</label>
+            <input type="text" id="rtltcpPort" class="input" value="1234" inputmode="numeric">
+          </div>
+          <div class="rtltcp-config-grid" id="hackrfSourceConfig" hidden>
+            <label class="manual-label" for="hackrfLnaGain">LNA gain (0–40 dB, kelipatan 8)</label>
+            <input type="text" id="hackrfLnaGain" class="input" value="24" inputmode="numeric">
+            <label class="manual-label" for="hackrfVgaGain">VGA gain (0–62 dB, kelipatan 2)</label>
+            <input type="text" id="hackrfVgaGain" class="input" value="20" inputmode="numeric">
+            <label class="checkbox-row">
+              <input type="checkbox" id="hackrfAmp">
+              <span>Amp RF +14 dB</span>
+            </label>
+          </div>
+          <div class="btn-pair" style="margin-top:10px;">
+            <button type="button" class="btn btn-secondary" id="rtltcpStopBtn">Berhenti</button>
+            <button type="button" class="btn btn-primary" id="rtltcpApplyBtn">Sambungkan</button>
+          </div>
+        </div>
         <div class="fbw-tabs">
           <button type="button" class="fbw-tab active" id="tabFrekuensiBtn" data-tab="frekuensi">FREKUENSI</button>
           <button type="button" class="fbw-tab" id="tabBandwidthBtn" data-tab="bandwidth">BANDWIDTH</button>
@@ -214,47 +258,6 @@
           </div>
         </div>
 
-        <!-- SUMBER RADIO: Web-888 / rtl_tcp (jaringan) atau HackRF (USB) -->
-        <div class="fbw-panel fbw-panel-static">
-          <span class="preset-label">Sumber Radio</span>
-          <div class="rtltcp-status-row">
-            <span class="dot" id="rtltcpDot"></span>
-            <span id="rtltcpStatusText">Belum tersambung</span>
-          </div>
-          <div class="rtltcp-config-grid">
-            <label class="manual-label" for="radioSourceSelect">Perangkat</label>
-            <select id="radioSourceSelect" class="device-select">
-              <option value="network" selected>Radio V1 · Web-888 / rtl_tcp (jaringan)</option>
-              <option value="webusb">Radio V2 · USB di browser</option>
-              <option value="hackrf">Radio V2 · USB lewat server</option>
-              <option value="hackrf-sim">Radio V2 · simulasi server (tanpa perangkat)</option>
-            </select>
-          </div>
-          <p class="panel-hint" id="webusbSourceConfig" hidden>
-            Radio dijalankan di browser lewat WebUSB. Kontrol lengkap (Mulai RX, gain, wide scan, marker)
-            ada di panel Radio V2 di bawah spektrum.
-          </p>
-          <div class="rtltcp-config-grid" id="networkSourceConfig">
-            <label class="manual-label" for="rtltcpHost">Host</label>
-            <input type="text" id="rtltcpHost" class="input" value="127.0.0.1">
-            <label class="manual-label" for="rtltcpPort">Port</label>
-            <input type="text" id="rtltcpPort" class="input" value="1234" inputmode="numeric">
-          </div>
-          <div class="rtltcp-config-grid" id="hackrfSourceConfig" hidden>
-            <label class="manual-label" for="hackrfLnaGain">LNA gain (0–40 dB, kelipatan 8)</label>
-            <input type="text" id="hackrfLnaGain" class="input" value="24" inputmode="numeric">
-            <label class="manual-label" for="hackrfVgaGain">VGA gain (0–62 dB, kelipatan 2)</label>
-            <input type="text" id="hackrfVgaGain" class="input" value="20" inputmode="numeric">
-            <label class="checkbox-row">
-              <input type="checkbox" id="hackrfAmp">
-              <span>Amp RF +14 dB</span>
-            </label>
-          </div>
-          <div class="btn-pair" style="margin-top:10px;">
-            <button type="button" class="btn btn-secondary" id="rtltcpStopBtn">Berhenti</button>
-            <button type="button" class="btn btn-primary" id="rtltcpApplyBtn">Sambungkan</button>
-          </div>
-        </div>
       </div>
     </aside>
     
@@ -317,120 +320,111 @@
 </aside>
     </div><!-- /.scope-row -->
 
-    <!-- HACKRF WEBUSB (Listener Kit): radio dijalankan di browser lewat WebUSB.
-         Tampil hanya saat Sumber Radio = "Radio V2 · USB di browser". Iframe kit tidak pernah
-         dilepas setelah dimuat (cukup disembunyikan) supaya RX tidak terhenti. -->
-    <div class="panel listener-panel" id="listenerPanel" hidden>
-      <div class="listener-head">
-        <h2 class="panel-title">Radio V2 · Panel Radio</h2>
-        <span class="status-pill" id="listenerStatusPill">Belum dimuat</span>
-      </div>
-      <p class="panel-hint">
-        Radio V2 dibaca langsung oleh browser lewat USB (Chrome/Edge, lewat localhost atau HTTPS). Pertama kali, klik
-        <b>Connect Device</b> di dalam panel radio di bawah untuk memilih perangkat radio; sesudah itu tombol Mulai RX
-        menyambung sendiri. Frekuensi, mode, volume dan spektrum di atas ikut mengendalikan radio ini.
-      </p>
-
-      <div class="listener-grid">
-        <div class="listener-frame-wrap">
-          <iframe id="listenerFrame" title="Panel Radio V2" allow="usb; autoplay; screen-wake-lock"></iframe>
-        </div>
-
-        <div class="listener-controls">
-          <div class="listener-block">
-            <span class="preset-label">Radio</span>
-            <label class="checkbox-row">
-              <input type="checkbox" id="listenerMock">
-              <span>Mock SDR (simulasi, bukan RF nyata)</span>
-            </label>
-            <div class="btn-pair">
-              <button type="button" class="btn btn-primary" id="listenerStartBtn">Mulai RX</button>
-              <button type="button" class="btn btn-secondary" id="listenerStopBtn">Hentikan</button>
-            </div>
-            <div class="btn-pair">
-              <button type="button" class="btn btn-secondary" id="listenerListenBtn">Dengarkan</button>
-              <button type="button" class="btn btn-secondary" id="listenerMuteBtn">Bisukan</button>
-            </div>
-          </div>
-
-          <div class="listener-block">
-            <span class="preset-label">Gain &amp; sample rate</span>
-            <div class="listener-field-row">
-              <label class="manual-label" for="listenerLna">LNA (0–40, step 8)</label>
-              <input type="text" id="listenerLna" class="input" value="24" inputmode="numeric">
-            </div>
-            <div class="listener-field-row">
-              <label class="manual-label" for="listenerVga">VGA (0–62, step 2)</label>
-              <input type="text" id="listenerVga" class="input" value="20" inputmode="numeric">
-            </div>
-            <label class="checkbox-row">
-              <input type="checkbox" id="listenerAmp">
-              <span>Amp RF</span>
-            </label>
-            <button type="button" class="btn btn-secondary btn-block" id="listenerGainsBtn">Terapkan gain</button>
-            <div class="listener-field-row">
-              <label class="manual-label" for="listenerSampleRate">Sample rate</label>
-              <select id="listenerSampleRate" class="device-select">
-                <option value="2000000">2 MSPS</option>
-                <option value="4000000">4 MSPS</option>
-                <option value="5000000">5 MSPS</option>
-                <option value="8000000">8 MSPS</option>
-                <option value="10000000" selected>10 MSPS</option>
-                <option value="16000000">16 MSPS</option>
-                <option value="20000000">20 MSPS</option>
-              </select>
-            </div>
-            <button type="button" class="btn btn-secondary btn-block" id="listenerRadioBtn">Terapkan sample rate</button>
-          </div>
-
-          <div class="listener-block">
-            <span class="preset-label">Wide scan (1–7250 MHz)</span>
-            <div class="listener-range-row">
-              <input type="text" id="listenerSweepStart" class="input" value="400" inputmode="decimal" aria-label="Awal scan (MHz)">
-              <span>–</span>
-              <input type="text" id="listenerSweepStop" class="input" value="500" inputmode="decimal" aria-label="Akhir scan (MHz)">
-              <span>MHz</span>
-            </div>
-            <div class="listener-field-row">
-              <label class="manual-label" for="listenerSweepFft">FFT</label>
-              <select id="listenerSweepFft" class="device-select">
-                <option value="4096">4096 (4,88 kHz)</option>
-                <option value="8192">8192 (2,44 kHz)</option>
-              </select>
-            </div>
-            <button type="button" class="btn btn-secondary btn-block" id="listenerSweepConfigBtn">Atur rentang</button>
-            <div class="btn-pair">
-              <button type="button" class="btn btn-primary" id="listenerSweepStartBtn">Mulai pindai</button>
-              <button type="button" class="btn btn-secondary" id="listenerSweepStopBtn">Hentikan pindai</button>
-            </div>
-            <label class="checkbox-row">
-              <input type="checkbox" id="listenerSweepResume" checked>
-              <span>Lanjutkan RX setelah pindai</span>
-            </label>
-          </div>
-
-          <div class="listener-block">
-            <span class="preset-label">Marker</span>
-            <button type="button" class="btn btn-secondary btn-block" id="listenerMarkerAddBtn">Tandai frekuensi VFO</button>
-            <ul class="listener-markers" id="listenerMarkers"><li class="listener-empty">Belum ada marker.</li></ul>
-          </div>
-        </div>
+    <!-- RADIO V2 · USB DI BROWSER (Listener Kit): panel radio kit mengisi seluruh
+         area (menggantikan spektrum di atas), kontrol tambahan di kolom samping.
+         Iframe kit tidak pernah dilepas setelah dimuat (cukup disembunyikan)
+         supaya RX tidak terhenti. -->
+    <div class="listener-panel" id="listenerPanel" hidden>
+      <div class="listener-frame-wrap">
+        <iframe id="listenerFrame" title="Panel Radio V2" allow="usb; autoplay; screen-wake-lock"></iframe>
       </div>
 
-      <div class="listener-sweep-wrap">
-        <div class="listener-sweep-head">
-          <span class="preset-label">Hasil wide scan</span>
+      <aside class="listener-side" aria-label="Kontrol Radio V2">
+        <div class="listener-side-head">
+          <span class="preset-label">Radio V2</span>
+          <span class="status-pill" id="listenerStatusPill">Belum dimuat</span>
+        </div>
+        <p class="panel-hint listener-tip">
+          Pertama kali: klik <b>Connect Device</b> di panel radio, pilih perangkatnya, lalu <b>Mulai RX</b>.
+        </p>
+
+        <div class="listener-block">
+          <label class="checkbox-row">
+            <input type="checkbox" id="listenerMock">
+            <span>Mock SDR (simulasi, bukan RF)</span>
+          </label>
+          <div class="btn-pair">
+            <button type="button" class="btn btn-primary" id="listenerStartBtn">Mulai RX</button>
+            <button type="button" class="btn btn-secondary" id="listenerStopBtn">Hentikan</button>
+          </div>
+          <div class="btn-pair">
+            <button type="button" class="btn btn-secondary" id="listenerListenBtn">Dengarkan</button>
+            <button type="button" class="btn btn-secondary" id="listenerMuteBtn">Bisukan</button>
+          </div>
+        </div>
+
+        <dl class="listener-status" id="listenerStatus"></dl>
+
+        <details class="listener-more">
+          <summary>Gain &amp; sample rate</summary>
+          <div class="listener-field-row">
+            <label class="manual-label" for="listenerLna">LNA (0–40, step 8)</label>
+            <input type="text" id="listenerLna" class="input" value="24" inputmode="numeric">
+          </div>
+          <div class="listener-field-row">
+            <label class="manual-label" for="listenerVga">VGA (0–62, step 2)</label>
+            <input type="text" id="listenerVga" class="input" value="20" inputmode="numeric">
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" id="listenerAmp">
+            <span>Amp RF</span>
+          </label>
+          <button type="button" class="btn btn-secondary btn-block" id="listenerGainsBtn">Terapkan gain</button>
+          <div class="listener-field-row">
+            <label class="manual-label" for="listenerSampleRate">Sample rate</label>
+            <select id="listenerSampleRate" class="device-select">
+              <option value="2000000">2 MSPS</option>
+              <option value="4000000">4 MSPS</option>
+              <option value="5000000">5 MSPS</option>
+              <option value="8000000">8 MSPS</option>
+              <option value="10000000" selected>10 MSPS</option>
+              <option value="16000000">16 MSPS</option>
+              <option value="20000000">20 MSPS</option>
+            </select>
+          </div>
+          <button type="button" class="btn btn-secondary btn-block" id="listenerRadioBtn">Terapkan sample rate</button>
+        </details>
+
+        <details class="listener-more" id="listenerSweepDetails">
+          <summary>Wide scan (1–7250 MHz)</summary>
+          <div class="listener-range-row">
+            <input type="text" id="listenerSweepStart" class="input" value="400" inputmode="decimal" aria-label="Awal scan (MHz)">
+            <span>–</span>
+            <input type="text" id="listenerSweepStop" class="input" value="500" inputmode="decimal" aria-label="Akhir scan (MHz)">
+            <span>MHz</span>
+          </div>
+          <div class="listener-field-row">
+            <label class="manual-label" for="listenerSweepFft">FFT</label>
+            <select id="listenerSweepFft" class="device-select">
+              <option value="4096">4096 (4,88 kHz)</option>
+              <option value="8192">8192 (2,44 kHz)</option>
+            </select>
+          </div>
+          <button type="button" class="btn btn-secondary btn-block" id="listenerSweepConfigBtn">Atur rentang</button>
+          <div class="btn-pair">
+            <button type="button" class="btn btn-primary" id="listenerSweepStartBtn">Mulai pindai</button>
+            <button type="button" class="btn btn-secondary" id="listenerSweepStopBtn">Hentikan</button>
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" id="listenerSweepResume" checked>
+            <span>Lanjutkan RX setelah pindai</span>
+          </label>
+          <canvas id="listenerSweepCanvas" class="listener-sweep-canvas" height="90"></canvas>
           <span class="listener-sweep-info" id="listenerSweepInfo">Belum ada data scan.</span>
-        </div>
-        <canvas id="listenerSweepCanvas" class="scope-canvas" height="120"></canvas>
-      </div>
+        </details>
 
-      <dl class="listener-status" id="listenerStatus"></dl>
-      <p class="panel-hint listener-license">
-        Panel Radio V2: AGPL-3.0-only, turunan BrowSDR.
-        <a href="https://github.com/sanadunt/hackrf-listener-kit" target="_blank" rel="noopener noreferrer">Kode sumber panel</a>
-        (commit 01a4531).
-      </p>
+        <details class="listener-more">
+          <summary>Marker</summary>
+          <button type="button" class="btn btn-secondary btn-block" id="listenerMarkerAddBtn">Tandai frekuensi VFO</button>
+          <ul class="listener-markers" id="listenerMarkers"><li class="listener-empty">Belum ada marker.</li></ul>
+        </details>
+
+        <p class="panel-hint listener-license">
+          Panel radio: AGPL-3.0-only, turunan BrowSDR ·
+          <a href="https://github.com/sanadunt/hackrf-listener-kit" target="_blank" rel="noopener noreferrer">kode sumber</a>
+          (commit 01a4531)
+        </p>
+      </aside>
     </div>
   </div><!-- /.radio-main -->
   </div><!-- /.radio-console -->

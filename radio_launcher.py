@@ -36,7 +36,7 @@ from pathlib import Path
 
 APP_NAME = "Radio Translate Papua"
 APP_ID = "RadioTranslatePapua"
-APP_VERSION = "1.0.0"
+FALLBACK_VERSION = "1.0.0"  # dipakai bila pyproject.toml tidak ada (installer)
 DEFAULT_PORT = 5050  # 5000 dipakai AirPlay Receiver di macOS
 CONFIG_FILENAME = "radio-translate.env"
 
@@ -85,6 +85,19 @@ def code_dir() -> Path:
     if is_frozen():
         return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent))
     return Path(__file__).resolve().parent
+
+
+def read_app_version() -> str:
+    """Versi dari pyproject.toml (satu sumber versi, dipakai juga oleh rilis GitHub)."""
+    try:
+        import tomllib
+        with open(code_dir() / "pyproject.toml", "rb") as f:
+            return tomllib.load(f)["project"]["version"]
+    except (OSError, KeyError, ValueError):
+        return os.environ.get("RADIO_BUILD_VERSION", FALLBACK_VERSION)
+
+
+APP_VERSION = read_app_version()
 
 
 def default_data_dir() -> Path:
@@ -311,6 +324,66 @@ def register_app_routes(core, data_dir: Path, config_path: Path, log_path: Path)
         return jsonify({"ok": True})
 
     register_setup_routes(core, config_path)
+    register_update_routes(core)
+
+
+# ----------------------------------------------------------------------
+# Update otomatis dari GitHub Releases (updater.py). Dicek saat halaman dibuka
+# (hasilnya di-cache supaya tidak kena batas permintaan GitHub); dipasang lewat
+# tombol "Update" di header, lalu dipakai setelah aplikasi dibuka ulang.
+# RADIO_UPDATE_CHECK=0 mematikan pengecekan; RADIO_UPDATE_REPO=pemilik/repo.
+# ----------------------------------------------------------------------
+UPDATE_CACHE_SECONDS = 600
+
+
+def register_update_routes(core):
+    from flask import jsonify, request
+    import updater
+
+    app_dir = code_dir()
+    repo = os.environ.get("RADIO_UPDATE_REPO", updater.DEFAULT_REPO)
+    cache = {"at": 0.0, "result": None}
+    state = {"installed": None}
+
+    def check(force: bool):
+        if not force and cache["result"] and time.monotonic() - cache["at"] < UPDATE_CACHE_SECONDS:
+            return cache["result"]
+        result = {"ok": True, "current": APP_VERSION, "repo": repo,
+                  "mode": updater.install_mode(app_dir, is_frozen()), "update_available": False}
+        try:
+            latest = updater.check_latest(repo)
+            result["latest"] = latest
+            result["update_available"] = updater.is_newer(latest["version"], APP_VERSION)
+        except updater.UpdateError as exc:
+            result["error"] = str(exc)
+        cache.update(at=time.monotonic(), result=result)
+        return result
+
+    @core.app.route("/app/update/status", methods=["GET"])
+    def update_status():
+        if os.environ.get("RADIO_UPDATE_CHECK", "1") == "0":
+            return jsonify({"ok": True, "current": APP_VERSION, "disabled": True, "update_available": False})
+        result = dict(check(request.args.get("force") == "1"))
+        result["installed"] = state["installed"]
+        return jsonify(result)
+
+    @core.app.route("/app/update/apply", methods=["POST"])
+    def update_apply():
+        if request.remote_addr not in ("127.0.0.1", "::1"):
+            return jsonify({"ok": False, "error": "Update hanya bisa dipasang dari komputer ini."}), 403
+        status = check(force=True)
+        if not status.get("update_available"):
+            return jsonify({"ok": False, "error": status.get("error") or "Sudah versi terbaru."}), 400
+        latest = status["latest"]
+        say(f"Memasang update {APP_VERSION} -> {latest['version']} ({status['mode']}) …")
+        try:
+            result = updater.install_update(app_dir, APP_VERSION, latest, is_frozen())
+        except (updater.UpdateError, OSError, subprocess.SubprocessError) as exc:
+            say(f"Update gagal: {exc}")
+            return jsonify({"ok": False, "error": str(exc)}), 500
+        state["installed"] = latest["version"]
+        say(f"Update {latest['version']} terpasang; dipakai setelah aplikasi dibuka ulang.")
+        return jsonify({"ok": True, "version": latest["version"], **result})
 
 
 # ----------------------------------------------------------------------

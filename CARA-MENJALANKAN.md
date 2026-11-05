@@ -61,6 +61,12 @@ mengaktifkan, lalu jalankan ulang. Log ada di `logs/radio-translate.log`.
 Pilihan baris perintah: `--port 5055`, `--host 127.0.0.1`, `--no-browser`,
 `--data-dir <folder>` (contoh: `./jalankan.sh --no-browser`).
 
+## Update
+
+Saat dibuka, aplikasi mengecek rilis terbaru di GitHub. Bila ada versi baru, klik
+**Update ke vX** di kanan atas, lalu tutup dan buka lagi aplikasinya. Model AI,
+rekaman dan setelan tidak disentuh. Detail & cara membuat rilis: [RILIS.md](RILIS.md).
+
 ## Cara lama
 
 `python app_faster_whisper_lokal.py` tetap jalan seperti sebelumnya (membuat

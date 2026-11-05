@@ -190,8 +190,26 @@
       el.classList.toggle('active', active);
       navButtons[id].setAttribute('aria-selected', active ? 'true' : 'false');
     });
-    if (pageId === 'pageSetRadio') resizeScopeCanvases();
+    if (pageId === 'pageSetRadio') fitSetRadio();
   }
+
+  // Set Radio dibuat pas satu layar (tanpa scroll halaman): tinggi .radio-console
+  // = tinggi jendela dikurangi posisi atasnya, dalam satuan halaman yang sudah
+  // di-scale (lihat DESIGN_WIDTH di index.html). Spektrum & waterfall / panel
+  // Radio V2 lalu mengisi sisa tinggi lewat flex (style.css "LAYOUT RINGKAS").
+  function fitSetRadio(){
+    const radioConsole = document.querySelector('.radio-console');
+    const inner = $('scaleInner');
+    if (!radioConsole || !inner || pages.pageSetRadio.hidden) return;
+    const scale = (inner.getBoundingClientRect().width / inner.offsetWidth) || 1;
+    const top = (radioConsole.getBoundingClientRect().top - inner.getBoundingClientRect().top) / scale;
+    const bottomPad = parseFloat(getComputedStyle(document.querySelector('.pages-wrap')).paddingBottom) || 0;
+    const available = window.innerHeight / scale - top - bottomPad;
+    radioConsole.style.height = `${Math.max(480, Math.floor(available))}px`;
+    resizeScopeCanvases();
+  }
+  // Setelah applyScale() di index.html (juga dijadwalkan lewat requestAnimationFrame).
+  window.addEventListener('resize', () => requestAnimationFrame(fitSetRadio));
 
   Object.entries(navButtons).forEach(([id, btn]) => {
     btn.addEventListener('click', () => showPage(id));
@@ -2342,10 +2360,10 @@
   let listenerClient = null;
   let listenerClientPromise = null;
   let listenerActive = false;      // Sumber Radio = webusb
-  let listenerScopeReady = false;  // kanvas spektrum sudah disiapkan untuk frame kit
   let listenerBwNoticeShown = false;
   let listenerLastBw = null;
   let listenerReceiverRev = null;  // tune.receiverRev terakhir dari receiver:status kit
+  let listenerSweepActive = false; // wide scan sedang berjalan (fase selain idle)
 
   // Perangkat "HackRF WebUSB" di dropdown Radio Input Device (WEBUSB_VIRTUAL_DEVICE_INDEX backend).
   const WEBUSB_DEVICE_INDEX = '-2';
@@ -2381,7 +2399,6 @@
       listenerFrame.src = kitUrl.href;
       listenerClient = createListenerClient(listenerFrame);
       listenerClient.on('status', onListenerStatus);
-      listenerClient.on('spectrum', onListenerSpectrum);
       listenerClient.on('sweep', onListenerSweep);
       listenerClient.on('markers', onListenerMarkers);
       listenerClient.on('audio', onListenerAudio);
@@ -2395,21 +2412,23 @@
         log(`Radio V2: panel radio siap (WebUSB ${hello.webusb ? 'tersedia' : 'TIDAK tersedia'}${hello.mockAvailable ? ', Mock SDR tersedia' : ''}).`, hello.webusb ? 'ok' : 'warn');
         if (!hello.webusb) log(`Radio V2: ${LISTENER_CODE_TEXT.NO_WEBUSB}`, 'warn');
         listenerClient.appearance({ theme: 'dark', lang: 'id' }).then((r) => { if (!r.ok) reportListener('tampilan', r); });
-        if (listenerActive || webusbForwarding) listenerUpdateSubscription();
+        if (webusbForwarding || listenerSweepActive) listenerUpdateSubscription();
       });
       return listenerClient;
     });
     return listenerClientPromise;
   }
 
-  // Spektrum hanya selama sumber webusb dipilih; audio hanya selama rekaman
-  // Auto Translate memakai perangkat HackRF WebUSB (webusbForwarding).
+  // Spektrum & waterfall Radio V2 tampil di panel radio kit sendiri, jadi halaman
+  // ini tidak berlangganan spektrum RX. Langganan dibuka hanya untuk:
+  //   - grafik wide scan di kolom samping (receiver:sweep butuh spectrum: true),
+  //     selama scan berjalan;
+  //   - audio, selama rekaman Auto Translate memakai Radio V2 di browser.
   function listenerUpdateSubscription(){
     if (!listenerClient) return Promise.resolve(null);
-    // spanHz di atas sample rate = selebar data RX; zoom tetap di-crop di kanvas.
-    const subscription = { spectrum: listenerActive, audio: webusbForwarding, bins: 1024, fps: 15, spanHz: 20000000 };
+    const subscription = { spectrum: listenerSweepActive, audio: webusbForwarding, bins: 512, fps: 5 };
     return listenerClient.subscribe(subscription).then((r) => {
-      if (!r.ok) reportListener('langganan spektrum/audio', r);
+      if (!r.ok) reportListener('langganan audio', r);
       return r;
     });
   }
@@ -2420,6 +2439,8 @@
     listenerActive = active;
     listenerPanel.hidden = !active;
     webusbSourceConfig.hidden = !active;
+    // Panel radio kit menggantikan spektrum halaman (style.css .is-webusb).
+    document.querySelector('.radio-console').classList.toggle('is-webusb', active);
     if (active){
       // Sumber backend (Web-888 / rtl_tcp / HackRF USB) dimatikan: satu HackRF
       // tidak bisa dipegang backend dan browser sekaligus.
@@ -2427,14 +2448,13 @@
       fetch(`${API_BASE}/spectrum/stop`, { method: 'POST' }).catch(() => {});
       activeSpectrumSource = null;
       freqOffsetHz = 0; // frekuensi kit sudah frekuensi tampil (termasuk Freq Shift-nya sendiri)
-      listenerScopeReady = false;
       ensureListener();
-      listenerUpdateSubscription();
     } else {
       if (listenerClient?.status?.running) listenerClient.stop().then((r) => reportListener('hentikan RX', r));
-      listenerUpdateSubscription();
       setListenerScopeUi(false, false);
       loadFreqOffset();
+      waterfallInitialized = false;
+      requestAnimationFrame(resizeScopeCanvases);
     }
   }
 
@@ -2548,6 +2568,7 @@
     reportListener('atur rentang scan', await client.sweepConfig(listenerSweepRange()));
   });
   $('listenerSweepStartBtn').addEventListener('click', async () => {
+    $('listenerSweepDetails').open = true;
     const client = await ensureListener();
     const mock = listenerMockInput.checked;
     listenerWithRecordingConfirm(mock ? 'mulai pindai (simulasi)' : 'mulai pindai',
@@ -2589,6 +2610,11 @@
     else if (status.running) pill = mock ? 'RX · MOCK (bukan RF)' : 'RX berjalan';
     else if (status.connected) pill = mock ? 'MOCK tersambung' : 'Tersambung';
     listenerStatusPill.textContent = pill;
+    const sweepActive = status.sweep.phase !== 'idle';
+    if (sweepActive !== listenerSweepActive){
+      listenerSweepActive = sweepActive;
+      listenerUpdateSubscription();
+    }
     listenerStatusPill.classList.toggle('busy', status.running || status.busy !== 'none');
 
     const vfo = status.vfo;
@@ -2626,31 +2652,6 @@
     const uiMode = LISTENER_MODE_TO_UI[vfo.mode];
     if (uiMode && modeSelect.value !== uiMode) modeSelect.value = uiMode;
     else if (vfo.mode === 'nfm' && !['FM', 'NFM'].includes(modeSelect.value)) modeSelect.value = 'NFM';
-  }
-
-  function onListenerSpectrum(frame){
-    if (!listenerActive) return;
-    if (!listenerScopeReady){
-      resizeScopeCanvases();
-      waterfallInitialized = false;
-      listenerScopeReady = true;
-    }
-    // Bin tanpa daya (−200 dB) diganti level terendah yang ada supaya skala otomatis tidak rusak.
-    const bins = Array.from(frame.bins);
-    let floor = Infinity;
-    for (const v of bins) if (v > -199 && v < floor) floor = v;
-    if (!Number.isFinite(floor)) return;
-    for (let i = 0; i < bins.length; i++) if (bins[i] <= -199) bins[i] = floor;
-    drawSpectrumFrame(bins, (frame.startHz + frame.stopHz) / 2, frame.stopHz - frame.startHz);
-    if (listenerClient?.status?.mock){
-      specCtx.save();
-      specCtx.font = `${Math.round(12 * (window.devicePixelRatio || 1))}px sans-serif`;
-      specCtx.fillStyle = '#f2b544';
-      specCtx.textAlign = 'right';
-      specCtx.textBaseline = 'top';
-      specCtx.fillText('MOCK SDR · BUKAN RF NYATA', spectrumCanvas.width - 8, 20);
-      specCtx.restore();
-    }
   }
 
   function onListenerSweep(frame){
@@ -2986,9 +2987,64 @@
     if (!info || !info.managed) return;
     appQuitBtn.hidden = false;
     appSetupBtn.hidden = false;
-    log(`Folder data aplikasi: ${info.data_dir} (model AI di ${info.model_dir}).`, 'info');
+    log(`Radio Translate Papua v${info.version}. Folder data: ${info.data_dir} (model AI di ${info.model_dir}).`, 'info');
     openSetupIfNeeded();
+    checkForUpdate();
   }).catch(() => { /* dijalankan langsung tanpa launcher */ });
+
+  /* ---- Update otomatis dari GitHub Releases (updater.py) ----
+     Dicek sekali saat halaman dibuka; tombol "Update" hanya muncul bila ada
+     rilis yang lebih baru. Update dipakai setelah aplikasi dibuka ulang. */
+  const appUpdateBtn = $('appUpdateBtn');
+  let pendingUpdate = null;
+
+  async function checkForUpdate(){
+    try{
+      const status = await safeJson(await fetch(`${API_BASE}/app/update/status`));
+      if (status.installed){
+        appUpdateBtn.hidden = false;
+        appUpdateBtn.textContent = `v${status.installed} siap — buka ulang`;
+        return;
+      }
+      if (!status.update_available) return;
+      pendingUpdate = status;
+      appUpdateBtn.hidden = false;
+      appUpdateBtn.textContent = `Update ke v${status.latest.version}`;
+      log(`Update tersedia: v${status.current} → v${status.latest.version} (${status.latest.html_url}).`, 'info');
+    } catch(err){ /* tanpa internet: diam saja */ }
+  }
+
+  appUpdateBtn.addEventListener('click', async () => {
+    if (!pendingUpdate){
+      if (window.confirm('Update sudah terpasang. Tutup aplikasi sekarang? Lalu buka lagi lewat Jalankan-Windows.bat / Jalankan-macOS.command.')) quitApp();
+      return;
+    }
+    const latest = pendingUpdate.latest;
+    const notes = latest.notes ? `\n\n${latest.notes.slice(0, 600)}` : '';
+    const how = pendingUpdate.mode === 'installer'
+      ? 'Versi installer: halaman unduhan rilis akan dibuka.'
+      : 'File kode diganti (model AI, rekaman & setelan tidak disentuh; file lama di-backup).';
+    if (!window.confirm(`Pasang update v${pendingUpdate.current} → v${latest.version}?\n${how}${notes}`)) return;
+    if (pendingUpdate.mode === 'installer'){
+      window.open(latest.html_url, '_blank', 'noopener');
+      return;
+    }
+    appUpdateBtn.disabled = true;
+    appUpdateBtn.textContent = 'Memasang update…';
+    try{
+      const data = await safeJson(await fetch(`${API_BASE}/app/update/apply`, { method: 'POST' }));
+      if (!data.ok) throw new Error(data.error || 'gagal');
+      pendingUpdate = null;
+      appUpdateBtn.textContent = `v${data.version} siap — buka ulang`;
+      log(`Update v${data.version} terpasang${data.written ? ` (${data.written.length} file diganti, backup di ${data.backup})` : ''}. Tutup aplikasi lalu buka lagi.`, 'ok');
+      if (window.confirm(`Update v${data.version} terpasang. Tutup aplikasi sekarang? Lalu buka lagi lewat Jalankan-Windows.bat / Jalankan-macOS.command.`)) quitApp();
+    } catch(err){
+      appUpdateBtn.textContent = `Update ke v${latest.version}`;
+      log(`Update gagal: ${err.message}`, 'err');
+    } finally {
+      appUpdateBtn.disabled = false;
+    }
+  });
   appQuitBtn.addEventListener('click', () => {
     if (window.confirm('Tutup Radio Translate Papua? Radio dan rekaman yang sedang berjalan akan dihentikan.')) quitApp();
   });
