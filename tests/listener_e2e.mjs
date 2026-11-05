@@ -147,6 +147,10 @@ async function main() {
 			const where = await page.evaluate(`JSON.stringify({ url: location.href, state: document.readyState, title: document.title })`).catch((e) => String(e));
 			throw new Error(`Halaman aplikasi tidak termuat: ${where}`);
 		}
+		// Wizard "Model AI" (setelan belum dibuat) menutupi halaman: lewati untuk sesi ini.
+		if (await page.waitFor(`!document.getElementById('setupWizard').hidden`, 3_000)) {
+			await page.evaluate(click('setupSkipBtn'));
+		}
 		await page.evaluate(`${click('navSetRadioBtn')}; ${selectSource('webusb')}`);
 		const ready = await page.waitFor(`[...document.querySelectorAll('#logBox > *')].some(e => e.textContent.includes('panel radio siap'))`, 15_000);
 		check('kit siap (receiver:hello)', ready);

@@ -310,6 +310,94 @@ def register_app_routes(core, data_dir: Path, config_path: Path, log_path: Path)
         threading.Thread(target=stop, daemon=True).start()
         return jsonify({"ok": True})
 
+    register_setup_routes(core, config_path)
+
+
+# ----------------------------------------------------------------------
+# Wizard "Model AI": memilih pakai AI (dan folder modelnya) atau radio saja.
+# Pilihan disimpan di radio-translate.env: RADIO_SETUP_DONE, RADIO_AI (dibaca
+# juga oleh script Jalankan-* untuk memasang paket AI), YALI_MODEL_DIR,
+# YALI_NO_MODEL. Setelan baru dipakai setelah aplikasi dibuka ulang.
+# ----------------------------------------------------------------------
+def ai_packages_installed() -> bool:
+    return importlib.util.find_spec("faster_whisper") is not None
+
+
+def register_setup_routes(core, config_path: Path):
+    from flask import jsonify, request
+    import model_setup
+
+    def saved():
+        return parse_env_file(config_path.read_text(encoding="utf-8")) if config_path.exists() else {}
+
+    def is_local():
+        return request.remote_addr in ("127.0.0.1", "::1")
+
+    @core.app.route("/app/setup/status", methods=["GET"])
+    def setup_status():
+        settings = saved()
+        done = settings.get("RADIO_SETUP_DONE") == "1"
+        mode = None
+        if done:
+            mode = "ai" if settings.get("RADIO_AI") == "1" else "radio"
+        model_dir = settings.get("YALI_MODEL_DIR") or str(core.MODEL_DIR)
+        return jsonify({
+            "ok": True,
+            "setup_done": done,
+            "mode": mode,
+            "ai_packages": ai_packages_installed(),
+            "frozen": is_frozen(),
+            "no_model_now": core.NO_MODEL_MODE,
+            "picker": model_setup.folder_picker_available() and is_local(),
+            "check": model_setup.check_model_dir(model_dir),
+        })
+
+    @core.app.route("/app/setup/check", methods=["POST"])
+    def setup_check():
+        path = str((request.get_json(silent=True) or {}).get("path") or "").strip()
+        if not path:
+            return jsonify({"ok": False, "error": "Isi folder model dulu."}), 400
+        return jsonify({"ok": True, "check": model_setup.check_model_dir(path)})
+
+    @core.app.route("/app/setup/pick-folder", methods=["POST"])
+    def setup_pick_folder():
+        # Dialog muncul di komputer tempat aplikasi jalan, jadi hanya dari komputer itu.
+        if not is_local():
+            return jsonify({"ok": False, "error": "Pilih folder hanya bisa dari komputer ini; ketik path-nya."}), 403
+        path = model_setup.pick_folder()
+        if path is None:
+            return jsonify({"ok": False, "error": "Dialog pilih folder tidak tersedia; ketik path-nya."})
+        if not path:
+            return jsonify({"ok": True, "cancelled": True})
+        return jsonify({"ok": True, "path": path, "check": model_setup.check_model_dir(path)})
+
+    @core.app.route("/app/setup/save", methods=["POST"])
+    def setup_save():
+        data = request.get_json(silent=True) or {}
+        mode = data.get("mode")
+        if mode == "radio":
+            model_setup.update_env_file(config_path, {
+                "RADIO_SETUP_DONE": "1", "RADIO_AI": "0", "YALI_NO_MODEL": "1",
+            })
+            return jsonify({"ok": True, "next": "none" if core.NO_MODEL_MODE else "reopen"})
+        if mode != "ai":
+            return jsonify({"ok": False, "error": "Pilihan tidak dikenal."}), 400
+
+        check = model_setup.check_model_dir(str(data.get("path") or core.MODEL_DIR))
+        if not check["ready"]:
+            return jsonify({"ok": False, "error": "Model Ambai belum lengkap.", "check": check}), 400
+        model_setup.update_env_file(config_path, {
+            "RADIO_SETUP_DONE": "1", "RADIO_AI": "1", "YALI_NO_MODEL": None,
+            "YALI_MODEL_DIR": check["model_dir"],
+        })
+        if not ai_packages_installed():
+            next_step = "installer-ai" if is_frozen() else "rerun-script"
+        elif core.NO_MODEL_MODE or Path(check["model_dir"]) != Path(core.MODEL_DIR):
+            next_step = "reopen"
+        else:
+            next_step = "none"
+        return jsonify({"ok": True, "next": next_step, "check": check})
+
 
 def wait_until_up(port: int, timeout: float = 30.0) -> bool:
     deadline = time.monotonic() + timeout

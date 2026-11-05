@@ -2,7 +2,8 @@
 rem Radio Translate Papua: klik dua kali untuk menjalankan.
 rem Pertama kali: memasang uv (pengelola Python), lalu Python 3.12 dan semua
 rem dependency otomatis sesuai uv.lock. Paket AI ikut dipasang bila ada folder
-rem model (models\ atau whisper-*) di folder ini, atau bila RADIO_AI=1.
+rem model (models\ atau whisper-*) di folder ini, bila wizard "Model AI" menyimpan
+rem RADIO_AI=1 di radio-translate.env, atau bila variabel RADIO_AI=1.
 setlocal
 title Radio Translate Papua - jangan tutup jendela ini selama aplikasi dipakai
 cd /d "%~dp0"
@@ -25,6 +26,10 @@ if errorlevel 1 (
 set "EXTRAS="
 if exist "models\" set "EXTRAS=--extra ai"
 dir /b /ad "whisper-*" >nul 2>nul && set "EXTRAS=--extra ai"
+if exist "radio-translate.env" (
+  findstr /b /c:"RADIO_AI=1" "radio-translate.env" >nul && set "EXTRAS=--extra ai"
+  findstr /b /c:"RADIO_AI=0" "radio-translate.env" >nul && set "EXTRAS="
+)
 if "%RADIO_AI%"=="1" set "EXTRAS=--extra ai"
 if "%RADIO_AI%"=="0" set "EXTRAS="
 

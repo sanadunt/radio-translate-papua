@@ -2959,15 +2959,16 @@
   setRtltcpStatus(false, 'Belum tersambung');
 
   log('Menghubungkan ke backend…', 'info');
-  /* ---- Tombol "Tutup Aplikasi" (hanya bila dijalankan lewat launcher/installer) ---- */
+  /* ============================================================
+     APLIKASI (launcher/installer): tombol "Tutup Aplikasi" dan wizard
+     "Model AI". Keduanya hanya tampil bila GET /app/info menjawab
+     (dijalankan lewat radio_launcher.py); dijalankan langsung lewat
+     python app_faster_whisper_lokal.py, semua ini diam.
+     ============================================================ */
   const appQuitBtn = $('appQuitBtn');
-  fetch(`${API_BASE}/app/info`).then(safeJson).then((info) => {
-    if (!info || !info.managed) return;
-    appQuitBtn.hidden = false;
-    log(`Folder data aplikasi: ${info.data_dir} (model AI di ${info.model_dir}).`, 'info');
-  }).catch(() => { /* dijalankan langsung tanpa launcher */ });
-  appQuitBtn.addEventListener('click', async () => {
-    if (!window.confirm('Tutup Radio Translate Papua? Radio dan rekaman yang sedang berjalan akan dihentikan.')) return;
+  const appSetupBtn = $('appSetupBtn');
+
+  async function quitApp(){
     try{
       const res = await fetch(`${API_BASE}/app/shutdown`, { method: 'POST' });
       const data = await safeJson(res);
@@ -2979,6 +2980,247 @@
     } catch(err){
       log(`Gagal menutup aplikasi: ${err.message}`, 'err');
     }
+  }
+
+  fetch(`${API_BASE}/app/info`).then(safeJson).then((info) => {
+    if (!info || !info.managed) return;
+    appQuitBtn.hidden = false;
+    appSetupBtn.hidden = false;
+    log(`Folder data aplikasi: ${info.data_dir} (model AI di ${info.model_dir}).`, 'info');
+    openSetupIfNeeded();
+  }).catch(() => { /* dijalankan langsung tanpa launcher */ });
+  appQuitBtn.addEventListener('click', () => {
+    if (window.confirm('Tutup Radio Translate Papua? Radio dan rekaman yang sedang berjalan akan dihentikan.')) quitApp();
+  });
+
+  /* ---- Wizard Model AI ----
+     Muncul saat aplikasi dibuka bila belum pernah diatur, atau bila AI dipilih
+     tapi ada file/paket yang kurang. "Lewati sementara" berlaku untuk sesi ini.
+     Pilihan disimpan backend di radio-translate.env dan dipakai saat aplikasi
+     dibuka ulang (paket AI dipasang oleh script Jalankan-*). */
+  const setupWizard = $('setupWizard');
+  const setupStepChoose = $('setupStepChoose');
+  const setupStepModels = $('setupStepModels');
+  const setupModelsIntro = $('setupModelsIntro');
+  const setupModelDir = $('setupModelDir');
+  const setupPickBtn = $('setupPickBtn');
+  const setupCheckBtn = $('setupCheckBtn');
+  const setupReport = $('setupReport');
+  const setupPackagesNote = $('setupPackagesNote');
+  const setupResult = $('setupResult');
+  const setupBackBtn = $('setupBackBtn');
+  const setupSkipBtn = $('setupSkipBtn');
+  const setupSaveBtn = $('setupSaveBtn');
+  const setupQuitBtn = $('setupQuitBtn');
+  const SETUP_SKIP_KEY = 'setupSkipped';
+  const SETUP_DEFAULT_INTRO = setupModelsIntro.textContent.trim();
+  const SETUP_NEXT_TEXT = {
+    none: 'Tersimpan. Setelan sudah dipakai.',
+    reopen: 'Tersimpan. Tutup aplikasi lalu buka lagi supaya setelan baru dipakai.',
+    'rerun-script': 'Tersimpan. Tutup aplikasi, lalu jalankan lagi Jalankan-Windows.bat (Windows) atau Jalankan-macOS.command (Mac). Paket AI (±3 GB) dipasang otomatis sekali; butuh internet dan beberapa menit.',
+    'installer-ai': 'Tersimpan, tapi versi aplikasi ini belum membawa paket AI. Pasang versi aplikasi dengan AI, lalu buka lagi.',
+  };
+  let setupStatus = null;
+
+  function setupShow(step){
+    setupWizard.hidden = false;
+    setupStepChoose.hidden = step !== 'choose';
+    setupStepModels.hidden = step !== 'models';
+    setupResult.hidden = step !== 'result';
+    setupBackBtn.hidden = step !== 'models';
+    setupSaveBtn.hidden = step !== 'models';
+    setupQuitBtn.hidden = true;
+    setupSkipBtn.hidden = false;
+    setupSkipBtn.textContent = step === 'result' ? 'Nanti saja' : 'Lewati sementara';
+  }
+
+  function setupClose(){
+    setupWizard.hidden = true;
+  }
+
+  function setupItemRow(item){
+    const row = document.createElement('div');
+    row.className = `setup-item ${item.ok ? 'is-ok' : 'is-missing'}`;
+    const head = document.createElement('div');
+    head.className = 'setup-item-head';
+    const mark = document.createElement('span');
+    mark.className = 'setup-mark';
+    mark.textContent = item.ok ? '✓' : '✗';
+    const label = document.createElement('span');
+    label.textContent = item.label;
+    const folder = document.createElement('code');
+    folder.textContent = item.folder;
+    head.append(mark, label, folder);
+    row.appendChild(head);
+    const notes = [];
+    if (item.missing.length) notes.push(['setup-missing', `Kurang: ${item.missing.join(', ')}`]);
+    if (item.missing_optional.length) notes.push(['setup-optional', `Tidak ada (opsional): ${item.missing_optional.join(', ')}`]);
+    if (item.hint) notes.push(['setup-hint', item.hint]);
+    for (const [cls, text] of notes){
+      const p = document.createElement('p');
+      p.className = cls;
+      p.textContent = text;
+      row.appendChild(p);
+    }
+    return row;
+  }
+
+  function renderSetupCheck(check){
+    const cards = Object.entries(check.languages).map(([lang, info]) => {
+      const card = document.createElement('div');
+      card.className = `setup-lang ${info.ok ? 'is-ok' : 'is-missing'}`;
+      const title = document.createElement('div');
+      title.className = 'setup-lang-title';
+      const name = document.createElement('b');
+      name.textContent = info.title;
+      const badge = document.createElement('span');
+      badge.className = 'setup-badge';
+      badge.textContent = lang === 'ambai' ? 'wajib' : 'opsional';
+      const state = document.createElement('span');
+      state.className = 'setup-lang-state';
+      state.textContent = info.ok ? 'Lengkap' : 'Belum lengkap';
+      title.append(name, badge, state);
+      card.appendChild(title);
+      info.items.forEach((item) => card.appendChild(setupItemRow(item)));
+      return card;
+    });
+    if (!check.exists){
+      const p = document.createElement('p');
+      p.className = 'setup-missing';
+      p.textContent = `Folder ${check.model_dir} tidak ditemukan.`;
+      cards.unshift(p);
+    }
+    setupReport.replaceChildren(...cards);
+    setupModelDir.value = check.model_dir;
+    setupSaveBtn.disabled = !check.ready;
+    setupSaveBtn.textContent = check.ready ? 'Simpan' : 'Lengkapi model Ambai dulu';
+  }
+
+  async function loadSetupStatus(){
+    const res = await fetch(`${API_BASE}/app/setup/status`);
+    setupStatus = await safeJson(res);
+    return setupStatus;
+  }
+
+  async function openSetup(step, intro){
+    const status = setupStatus || await loadSetupStatus();
+    setupModelsIntro.textContent = intro || SETUP_DEFAULT_INTRO;
+    setupPickBtn.hidden = !status.picker;
+    setupPackagesNote.hidden = status.ai_packages;
+    setupPackagesNote.textContent = status.frozen
+      ? 'Versi aplikasi ini belum membawa paket AI; model bisa diatur sekarang dan dipakai di versi dengan AI.'
+      : 'Paket AI (±3 GB) belum terpasang. Setelah disimpan, tutup aplikasi lalu jalankan lagi script Jalankan-…; paket AI dipasang otomatis sekali (butuh internet).';
+    renderSetupCheck(status.check);
+    setupShow(step);
+  }
+
+  async function openSetupIfNeeded(){
+    let skipped = false;
+    try{ skipped = sessionStorage.getItem(SETUP_SKIP_KEY) === '1'; } catch(err){ /* diblokir: anggap belum */ }
+    try{
+      const status = await loadSetupStatus();
+      if (!status.setup_done){
+        openSetup('choose');
+      } else if (status.mode === 'ai' && !skipped && (!status.check.ready || !status.ai_packages)){
+        openSetup('models', !status.check.ready
+          ? 'Ada file model yang kurang. Lengkapi foldernya (lihat daftar di bawah), atau lewati dulu untuk memakai radio saja.'
+          : SETUP_DEFAULT_INTRO);
+      }
+    } catch(err){
+      log(`Gagal membaca setelan Model AI: ${err.message}`, 'warn');
+    }
+  }
+
+  function setupFinish(next){
+    setupResult.textContent = SETUP_NEXT_TEXT[next] || 'Tersimpan.';
+    setupShow('result');
+    setupStatus = null; // baca ulang saat wizard dibuka lagi
+    if (next === 'none'){
+      setTimeout(setupClose, 1500);
+    } else {
+      setupQuitBtn.hidden = false;
+    }
+  }
+
+  async function setupSave(payload){
+    setupSaveBtn.disabled = true;
+    try{
+      const res = await fetch(`${API_BASE}/app/setup/save`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await safeJson(res);
+      if (!data.ok){
+        log(`Model AI: ${data.error}`, 'warn');
+        if (data.check){
+          renderSetupCheck(data.check); // mengatur ulang tombol Simpan sesuai hasil cek
+          return;
+        }
+      } else {
+        log(payload.mode === 'ai' ? `Model AI disimpan (folder ${data.check.model_dir}).` : 'Mode "hanya radio" disimpan.', 'ok');
+        setupFinish(data.next);
+      }
+    } catch(err){
+      log(`Gagal menyimpan setelan Model AI: ${err.message}`, 'err');
+    }
+    setupSaveBtn.disabled = false;
+  }
+
+  async function setupCheckPath(){
+    const path = setupModelDir.value.trim();
+    if (!path){ setupModelDir.focus(); return; }
+    try{
+      const res = await fetch(`${API_BASE}/app/setup/check`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path }),
+      });
+      const data = await safeJson(res);
+      if (data.ok) renderSetupCheck(data.check);
+      else log(`Model AI: ${data.error}`, 'warn');
+    } catch(err){
+      log(`Gagal memeriksa folder model: ${err.message}`, 'err');
+    }
+  }
+
+  appSetupBtn.addEventListener('click', async () => {
+    setupStatus = null;
+    const status = await loadSetupStatus().catch(() => null);
+    if (status) openSetup(status.mode === 'ai' ? 'models' : 'choose');
+  });
+  $('setupChooseAi').addEventListener('click', () => openSetup('models'));
+  $('setupChooseRadio').addEventListener('click', () => setupSave({ mode: 'radio' }));
+  setupBackBtn.addEventListener('click', () => setupShow('choose'));
+  setupCheckBtn.addEventListener('click', setupCheckPath);
+  setupModelDir.addEventListener('keydown', (e) => { if (e.key === 'Enter') setupCheckPath(); });
+  setupSaveBtn.addEventListener('click', () => setupSave({ mode: 'ai', path: setupModelDir.value.trim() }));
+  setupQuitBtn.addEventListener('click', quitApp);
+  setupPickBtn.addEventListener('click', async () => {
+    const label = setupPickBtn.textContent;
+    setupPickBtn.disabled = true;
+    setupPickBtn.textContent = 'Menunggu dialog…';
+    log('Model AI: dialog pilih folder dibuka di komputer ini (bisa muncul di belakang jendela aplikasi).', 'info');
+    try{
+      const res = await fetch(`${API_BASE}/app/setup/pick-folder`, { method: 'POST' });
+      const data = await safeJson(res);
+      if (!data.ok) log(`Model AI: ${data.error}`, 'warn');
+      else if (data.check) renderSetupCheck(data.check);
+    } catch(err){
+      log(`Gagal membuka dialog pilih folder: ${err.message}`, 'err');
+    } finally {
+      setupPickBtn.disabled = false;
+      setupPickBtn.textContent = label;
+    }
+  });
+  function setupSkip(){
+    try{ sessionStorage.setItem(SETUP_SKIP_KEY, '1'); } catch(err){ /* abaikan */ }
+    setupClose();
+    log('Wizard Model AI dilewati untuk sesi ini; buka lagi lewat tombol "Model AI".', 'info');
+  }
+  setupSkipBtn.addEventListener('click', setupSkip);
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !setupWizard.hidden) setupSkip();
   });
 
   loadDevices();

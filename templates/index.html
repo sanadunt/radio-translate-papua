@@ -32,6 +32,7 @@
       <span class="brand-label" id="brandLabel">TRANSLATE</span>
     </div>
     <!-- Hanya tampil saat dijalankan lewat launcher/installer (GET /app/info). -->
+    <button type="button" class="btn btn-ghost btn-sm app-quit-btn" id="appSetupBtn" hidden>Model AI</button>
     <button type="button" class="btn btn-ghost btn-sm app-quit-btn" id="appQuitBtn" hidden>Tutup Aplikasi</button>
   </div>
 
@@ -560,6 +561,56 @@
 
 </div><!-- /#scaleInner -->
 </div><!-- /#scaleOuter -->
+
+<!-- WIZARD MODEL AI: di luar #scaleOuter supaya tidak ikut di-scale (position: fixed).
+     Tampil hanya bila dijalankan lewat launcher (GET /app/setup/status). -->
+<div class="setup-overlay" id="setupWizard" role="dialog" aria-modal="true" aria-labelledby="setupTitle" hidden>
+  <div class="panel setup-card">
+    <h2 class="panel-title" id="setupTitle">Model AI penerjemah</h2>
+
+    <div id="setupStepChoose">
+      <p class="home-text">
+        Aplikasi bisa dipakai dengan atau tanpa model AI. Tanpa AI, radio, spektrum, rekam dan upload
+        tetap jalan; hasil Whisper dan terjemahan hanya berupa teks penanda. Pilihan ini bisa diubah
+        kapan saja lewat tombol <b>Model AI</b> di atas.
+      </p>
+      <div class="setup-choices">
+        <button type="button" class="setup-choice" id="setupChooseAi">
+          <b>Pakai AI penerjemah</b>
+          <span>Pilih folder model dari Google Drive (Whisper + terjemahan)</span>
+        </button>
+        <button type="button" class="setup-choice" id="setupChooseRadio">
+          <b>Hanya radio dulu</b>
+          <span>Spektrum, radio, rekam &amp; upload tanpa AI</span>
+        </button>
+      </div>
+    </div>
+
+    <div id="setupStepModels" hidden>
+      <p class="panel-hint" id="setupModelsIntro">
+        Pilih folder yang berisi folder model dari Google Drive. Model Ambai wajib lengkap; Biak boleh menyusul.
+      </p>
+      <label class="manual-label" for="setupModelDir">Folder model AI</label>
+      <div class="setup-dir-row">
+        <input type="text" id="setupModelDir" class="input" spellcheck="false" placeholder="mis. D:\Model Papua">
+        <button type="button" class="btn btn-secondary" id="setupPickBtn">Pilih folder…</button>
+        <button type="button" class="btn btn-secondary" id="setupCheckBtn">Periksa</button>
+      </div>
+      <div class="setup-report" id="setupReport"></div>
+      <p class="panel-hint setup-note" id="setupPackagesNote" hidden></p>
+    </div>
+
+    <div class="setup-result" id="setupResult" hidden></div>
+
+    <div class="setup-actions">
+      <button type="button" class="btn btn-ghost" id="setupBackBtn" hidden>Kembali</button>
+      <span class="setup-spacer"></span>
+      <button type="button" class="btn btn-ghost" id="setupSkipBtn">Lewati sementara</button>
+      <button type="button" class="btn btn-primary" id="setupSaveBtn" hidden disabled>Simpan</button>
+      <button type="button" class="btn btn-primary" id="setupQuitBtn" hidden>Tutup Aplikasi</button>
+    </div>
+  </div>
+</div>
 
 <script>
 /* ============================================================

@@ -19,16 +19,37 @@ konsol / Ctrl+C).
 Radio V2 · USB di browser butuh **Chrome atau Edge** (WebUSB). Browser lain tetap
 bisa memakai Radio V1 dan Auto Translate.
 
-## Model AI
+## Model AI (wizard)
 
-- **Tanpa model** (sekarang): aplikasi otomatis jalan dalam *mode tanpa model*;
-  semua fitur radio, rekam dan upload jalan, hasil Whisper/terjemahan berupa teks
-  penanda `[TANPA MODEL]`.
-- **Dengan model**: taruh folder model dari Google Drive (`whisper-ambai-…`,
-  `whisper-biak-…`, `best_bleu_ambai`, `best_bleu_biak`) di folder ini (atau di
-  subfolder `models/`), lalu jalankan script lagi. Script otomatis ikut memasang
-  paket AI (torch versi CUDA di Windows/Linux, ±3 GB, sekali saja).
-  Paksa dengan `RADIO_AI=1` atau `RADIO_AI=0`.
+Saat pertama dibuka, aplikasi menampilkan wizard **Model AI** (bisa dibuka lagi
+kapan saja lewat tombol **Model AI** di kanan atas):
+
+- **Hanya radio dulu**: spektrum, radio, rekam dan upload jalan tanpa AI; hasil
+  Whisper/terjemahan berupa teks penanda `[TANPA MODEL]`.
+- **Pakai AI penerjemah**: pilih folder model (tombol *Pilih folder…* atau ketik
+  path). Wizard memeriksa setiap model dan menyebut **file apa yang kurang**,
+  termasuk folder berlapis hasil ekstrak zip. Model Ambai wajib lengkap, Biak
+  boleh menyusul. Setelah disimpan: tutup aplikasi lalu jalankan lagi script
+  `Jalankan-…`; paket AI (torch CUDA di Windows/Linux, ±3 GB) dipasang otomatis
+  sekali.
+- **Lewati sementara**: tutup wizard untuk sesi ini saja.
+
+Wizard muncul lagi otomatis bila AI dipilih tapi ada file model atau paket AI
+yang kurang. Aplikasi tidak pernah mengunduh model sendiri.
+
+Folder model dari Google Drive (nama harus persis sama):
+
+| Folder | Isi wajib |
+|---|---|
+| `whisper-ambai-v2-10epochs-faster-whisper` | `model.bin`, `config.json`, `tokenizer.json`, `vocabulary.json` |
+| `whisper-biak-v4-10epochs-faster-whisper` | sama |
+| `best_bleu_ambai` | `config.json`, `model.safetensors`, `tokenizer.json`, `tokenizer_config.json` |
+| `best_bleu_biak` | sama |
+
+Pilihan wizard tersimpan di `radio-translate.env` (`RADIO_SETUP_DONE`,
+`RADIO_AI`, `YALI_MODEL_DIR`, `YALI_NO_MODEL`). Tanpa wizard: taruh folder model
+di folder ini (atau `models/`) dan script otomatis memasang paket AI; paksa
+dengan variabel `RADIO_AI=1` atau `RADIO_AI=0`.
 
 ## Setelan
 
