@@ -361,9 +361,12 @@ def register_update_routes(core):
 
     @core.app.route("/app/update/status", methods=["GET"])
     def update_status():
-        if os.environ.get("RADIO_UPDATE_CHECK", "1") == "0":
+        # force=1 = operator menekan "Cek update"; RADIO_UPDATE_CHECK=0 hanya
+        # mematikan pengecekan otomatis saat halaman dibuka.
+        force = request.args.get("force") == "1"
+        if os.environ.get("RADIO_UPDATE_CHECK", "1") == "0" and not force:
             return jsonify({"ok": True, "current": APP_VERSION, "disabled": True, "update_available": False})
-        result = dict(check(request.args.get("force") == "1"))
+        result = dict(check(force))
         result["installed"] = state["installed"]
         return jsonify(result)
 

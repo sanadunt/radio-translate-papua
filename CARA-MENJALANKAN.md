@@ -63,8 +63,9 @@ Pilihan baris perintah: `--port 5055`, `--host 127.0.0.1`, `--no-browser`,
 
 ## Update
 
-Saat dibuka, aplikasi mengecek rilis terbaru di GitHub. Bila ada versi baru, klik
-**Update ke vX** di kanan atas, lalu tutup dan buka lagi aplikasinya. Model AI,
+Klik **Cek update** di kanan atas (aplikasi juga mengecek sendiri saat dibuka).
+Bila ada versi baru, tombol menjadi **Update ke vX**: klik, konfirmasi, lalu tutup
+dan buka lagi aplikasinya. Tidak perlu git, cukup internet ke GitHub. Model AI,
 rekaman dan setelan tidak disentuh. Detail & cara membuat rilis: [RILIS.md](RILIS.md).
 
 ## Cara lama

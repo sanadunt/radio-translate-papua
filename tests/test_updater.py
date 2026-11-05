@@ -96,7 +96,11 @@ class InstallModeTest(unittest.TestCase):
             self.assertEqual(updater.install_mode(app, frozen=True), "installer")
             self.assertEqual(updater.install_mode(app, frozen=False), "zip")
             (app / ".git").mkdir()
-            self.assertEqual(updater.install_mode(app, frozen=False), "git")
+            with mock.patch.object(updater.shutil, "which", return_value="/usr/bin/git"):
+                self.assertEqual(updater.install_mode(app, frozen=False), "git")
+            # Host tanpa git: folder .git ada, tetapi update tetap lewat ZIP.
+            with mock.patch.object(updater.shutil, "which", return_value=None):
+                self.assertEqual(updater.install_mode(app, frozen=False), "zip")
 
 
 class CheckLatestTest(unittest.TestCase):

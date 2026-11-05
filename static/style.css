@@ -2206,3 +2206,10 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 /* Tombol geser frekuensi muat 4 kolom di panel pengaturan 320px. */
 .settings-section .nudge-row{ gap: 5px; }
 .settings-section .nudge-row .btn-nudge{ font-size: 12px; padding: 7px 2px; }
+
+/* Tombol "Cek update": disorot saat ada versi baru / update siap dipakai. */
+.app-update-btn.is-available{
+  background: var(--cyan);
+  border-color: var(--cyan-bright);
+  color: var(--bg-deep);
+}

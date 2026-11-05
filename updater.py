@@ -5,7 +5,7 @@ Update otomatis dari GitHub Releases.
 Kanal update = rilis GitHub (tag vX.Y.Z), bukan setiap commit: pengguna hanya
 menerima versi yang memang sudah dirilis (lihat RILIS.md). Cara memasang:
 
-  - Folder hasil `git clone` (ada .git/): `git pull --ff-only`.
+  - Folder hasil `git clone` (ada .git/) dan git terpasang: `git pull --ff-only`.
   - Folder hasil download ZIP: unduh ZIP rilis dari GitHub lalu timpa file kode.
     File & folder data pengguna (PRESERVE) tidak pernah disentuh; file yang
     ditimpa disalin dulu ke update-backup/<versi lama>/.
@@ -67,7 +67,11 @@ def is_preserved(relative: PurePosixPath) -> bool:
 def install_mode(app_dir: Path, frozen: bool) -> str:
     if frozen:
         return "installer"
-    return "git" if (Path(app_dir) / ".git").is_dir() else "zip"
+    # git pull hanya bila folder hasil clone DAN git terpasang; host tanpa git
+    # (mis. folder .git ikut tersalin dari komputer lain) tetap bisa update lewat ZIP.
+    if (Path(app_dir) / ".git").is_dir() and shutil.which("git"):
+        return "git"
+    return "zip"
 
 
 def _check_url(url: str):

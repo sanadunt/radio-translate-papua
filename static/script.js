@@ -3538,38 +3538,81 @@
     if (!info || !info.managed) return;
     appQuitBtn.hidden = false;
     appSetupBtn.hidden = false;
+    appVersion = info.version;
+    setUpdateButton('idle');
     log(`Radio Translate Papua v${info.version}. Folder data: ${info.data_dir} (model AI di ${info.model_dir}).`, 'info');
     openSetupIfNeeded();
-    checkForUpdate();
+    checkForUpdate(false);
   }).catch(() => { /* dijalankan langsung tanpa launcher */ });
 
-  /* ---- Update otomatis dari GitHub Releases (updater.py) ----
-     Dicek sekali saat halaman dibuka; tombol "Update" hanya muncul bila ada
-     rilis yang lebih baru. Update dipakai setelah aplikasi dibuka ulang. */
+  /* ---- Update dari GitHub Releases (updater.py) ----
+     Tombol di header selalu ada: "Cek update" mengecek rilis terbaru saat
+     diklik (juga dicek sekali otomatis saat halaman dibuka). Bila ada versi
+     baru, tombol menjadi "Update ke vX" dan klik berikutnya memasangnya.
+     Tanpa git pun bisa: rilis diunduh sebagai ZIP dari GitHub. Update dipakai
+     setelah aplikasi dibuka ulang lewat script Jalankan-*. */
   const appUpdateBtn = $('appUpdateBtn');
+  let appVersion = '';
   let pendingUpdate = null;
+  let installedUpdate = null;
+  let updateFeedbackTimer = null;
 
-  async function checkForUpdate(){
-    try{
-      const status = await safeJson(await fetch(`${API_BASE}/app/update/status`));
-      if (status.installed){
-        appUpdateBtn.hidden = false;
-        appUpdateBtn.textContent = `v${status.installed} siap — buka ulang`;
-        return;
-      }
-      if (!status.update_available) return;
-      pendingUpdate = status;
-      appUpdateBtn.hidden = false;
-      appUpdateBtn.textContent = `Update ke v${status.latest.version}`;
-      log(`Update tersedia: v${status.current} → v${status.latest.version} (${status.latest.html_url}).`, 'info');
-    } catch(err){ /* tanpa internet: diam saja */ }
+  function setUpdateButton(state, text){
+    clearTimeout(updateFeedbackTimer);
+    appUpdateBtn.hidden = false;
+    appUpdateBtn.disabled = state === 'busy';
+    appUpdateBtn.classList.toggle('is-available', state === 'available' || state === 'installed');
+    const labels = {
+      idle: 'Cek update',
+      available: pendingUpdate ? `Update ke v${pendingUpdate.latest.version}` : 'Update',
+      installed: installedUpdate ? `v${installedUpdate} siap — buka ulang` : 'Buka ulang',
+      busy: text || 'Memeriksa…',
+    };
+    appUpdateBtn.textContent = text || labels[state];
+    appUpdateBtn.title = appVersion ? `Versi terpasang: v${appVersion}` : '';
   }
 
-  appUpdateBtn.addEventListener('click', async () => {
-    if (!pendingUpdate){
-      if (window.confirm('Update sudah terpasang. Tutup aplikasi sekarang? Lalu buka lagi lewat Jalankan-Windows.bat / Jalankan-macOS.command.')) quitApp();
-      return;
+  // Pesan singkat di tombol, lalu kembali ke "Cek update".
+  function flashUpdateButton(text){
+    setUpdateButton('idle', text);
+    updateFeedbackTimer = setTimeout(() => setUpdateButton('idle'), 4000);
+  }
+
+  async function checkForUpdate(manual){
+    if (manual) setUpdateButton('busy', 'Memeriksa…');
+    try{
+      const status = await safeJson(await fetch(`${API_BASE}/app/update/status${manual ? '?force=1' : ''}`));
+      if (status.installed){
+        installedUpdate = status.installed;
+        setUpdateButton('installed');
+        return null;
+      }
+      if (status.update_available){
+        pendingUpdate = status;
+        setUpdateButton('available');
+        log(`Update tersedia: v${status.current} → v${status.latest.version} (${status.latest.html_url}).`, 'info');
+        return status;
+      }
+      if (!manual){
+        setUpdateButton('idle');
+      } else if (status.error){
+        flashUpdateButton('Gagal cek update');
+        log(`Cek update gagal: ${status.error}`, 'err');
+        window.alert(`Gagal mengecek update.\n${status.error}`);
+      } else {
+        flashUpdateButton(`Sudah versi terbaru (v${status.current})`);
+        log(`Cek update: sudah versi terbaru (v${status.current}).`, 'ok');
+      }
+    } catch(err){
+      if (manual){
+        flashUpdateButton('Gagal cek update');
+        window.alert(`Gagal mengecek update: ${err.message}`);
+      }
     }
+    return null;
+  }
+
+  async function installUpdate(){
     const latest = pendingUpdate.latest;
     const notes = latest.notes ? `\n\n${latest.notes.slice(0, 600)}` : '';
     const how = pendingUpdate.mode === 'installer'
@@ -3580,21 +3623,28 @@
       window.open(latest.html_url, '_blank', 'noopener');
       return;
     }
-    appUpdateBtn.disabled = true;
-    appUpdateBtn.textContent = 'Memasang update…';
+    setUpdateButton('busy', 'Memasang update…');
     try{
       const data = await safeJson(await fetch(`${API_BASE}/app/update/apply`, { method: 'POST' }));
       if (!data.ok) throw new Error(data.error || 'gagal');
       pendingUpdate = null;
-      appUpdateBtn.textContent = `v${data.version} siap — buka ulang`;
+      installedUpdate = data.version;
+      setUpdateButton('installed');
       log(`Update v${data.version} terpasang${data.written ? ` (${data.written.length} file diganti, backup di ${data.backup})` : ''}. Tutup aplikasi lalu buka lagi.`, 'ok');
       if (window.confirm(`Update v${data.version} terpasang. Tutup aplikasi sekarang? Lalu buka lagi lewat Jalankan-Windows.bat / Jalankan-macOS.command.`)) quitApp();
     } catch(err){
-      appUpdateBtn.textContent = `Update ke v${latest.version}`;
+      setUpdateButton('available');
       log(`Update gagal: ${err.message}`, 'err');
-    } finally {
-      appUpdateBtn.disabled = false;
+      window.alert(`Update gagal: ${err.message}`);
     }
+  }
+
+  appUpdateBtn.addEventListener('click', async () => {
+    if (installedUpdate){
+      if (window.confirm('Update sudah terpasang. Tutup aplikasi sekarang? Lalu buka lagi lewat Jalankan-Windows.bat / Jalankan-macOS.command.')) quitApp();
+      return;
+    }
+    if (pendingUpdate || await checkForUpdate(true)) installUpdate();
   });
   appQuitBtn.addEventListener('click', () => {
     if (window.confirm('Tutup Radio Translate Papua? Radio dan rekaman yang sedang berjalan akan dihentikan.')) quitApp();
