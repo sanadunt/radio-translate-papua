@@ -28,3 +28,9 @@ node_modules/
 .run/
 .DS_Store
 Thumbs.db
+
+# Database VFO Record
+rekaman.db
+rekaman.db-journal
+rekaman.db-wal
+rekaman.db-shm

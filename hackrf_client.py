@@ -370,6 +370,12 @@ class HackRFClient:
         # seperti jalur rtl_tcp.
         return False
 
+    def set_squelch(self, snr_db: float):
+        """Ambang squelch adaptif (dB di atas noise floor), sama perannya dengan
+        Web888Client.set_squelch (dBm)."""
+        with self.lock:
+            self.squelch_snr_db = float(snr_db)
+
     # ------------------------------------------------------------------
     # Buffer audio (sama persis dengan Web888Client)
     # ------------------------------------------------------------------
@@ -561,13 +567,17 @@ class HackRFClient:
         return np.clip(audio, -1.0, 1.0).astype(np.float32)
 
     def _update_squelch(self, snr: Optional[float], dbfs: Optional[float]) -> bool:
+        # Disimpan sebagai float/bool Python biasa: nilai numpy (np.float64/np.bool_)
+        # membuat jsonify(status()) gagal ("Object of type bool is not JSON serializable").
+        snr = None if snr is None else float(snr)
+        dbfs = None if dbfs is None else float(dbfs)
         with self._audio_lock:
             if snr is None:
                 self.squelch_open = False
             else:
                 was_open = self.squelch_open
                 thr = self.squelch_snr_db - (self.squelch_hysteresis_db if was_open else 0.0)
-                self.squelch_open = snr >= thr
+                self.squelch_open = bool(snr >= thr)
             self.current_snr_db = snr
             self.current_channel_dbfs = dbfs
             return self.squelch_open

@@ -241,6 +241,7 @@ from pydub.silence import split_on_silence
 from web888_client import Web888Client, KIWI_AUDIO_RATE
 from hackrf_client import HackRFClient, HACKRF_AUDIO_RATE
 from webusb_audio_bridge import WebUSBAudioBridge
+from records_db import NOTE_MAX_CHARS, RecordsDB
 
 TARGET_SR = 16000
 # ==========================================================
@@ -1626,7 +1627,8 @@ class PipelineService:
         if not text:
             return ""
         if NO_MODEL_MODE:
-            return f"[TANPA MODEL] {text}"
+            # Teks Whisper versi tanpa model sudah berawalan penanda; jangan dobel.
+            return text if text.startswith("[TANPA MODEL]") else f"[TANPA MODEL] {text}"
 
         with self.model_lock:
             original = text
@@ -2851,6 +2853,58 @@ def sdr_set_mode():
         return jsonify({"ok": False, "error": str(e), "traceback": tb}), 500
 
 
+# Squelch untuk panel pengaturan Listener: Web-888 memakai ambang S-meter (dBm),
+# Radio V2 lewat server memakai ambang SNR di atas noise floor (dB). SDR++/rigctl
+# tidak punya squelch yang bisa diatur dari sini.
+SQUELCH_RANGES = {
+    "web888": {"unit": "dBm", "min": -140.0, "max": -20.0, "step": 1.0},
+    "hackrf": {"unit": "dB SNR", "min": 0.0, "max": 40.0, "step": 1.0},
+}
+
+
+def _squelch_state():
+    src = active_spectrum_source()
+    if src == "web888":
+        value = float(web888.squelch_dbm)
+    elif src == "hackrf":
+        value = float(hackrf.squelch_snr_db)
+    else:
+        return {"ok": True, "supported": False, "source": src}
+    radio = direct_radio()
+    return {
+        "ok": True,
+        "supported": True,
+        "source": src,
+        **SQUELCH_RANGES[src],
+        "value": value,
+        "open": bool(radio.is_squelch_open()),
+    }
+
+
+@app.route("/sdr/squelch", methods=["GET"])
+def sdr_get_squelch():
+    return jsonify(_squelch_state())
+
+
+@app.route("/sdr/squelch", methods=["POST"])
+def sdr_set_squelch():
+    """Body JSON: { "value": -100 } (dBm untuk Web-888, dB SNR untuk Radio V2 lewat server)."""
+    data = request.get_json(force=True, silent=True) or {}
+    src = active_spectrum_source()
+    limits = SQUELCH_RANGES.get(src)
+    if limits is None:
+        return jsonify({"ok": False, "supported": False,
+                        "error": "Sumber radio ini tidak punya squelch yang bisa diatur."}), 400
+    try:
+        value = float(data.get("value"))
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "Field 'value' (angka) wajib diisi."}), 400
+    if not limits["min"] <= value <= limits["max"]:
+        return jsonify({"ok": False, "error": f"Squelch harus {limits['min']:g}..{limits['max']:g} {limits['unit']}."}), 400
+    direct_radio().set_squelch(value)
+    return jsonify(_squelch_state())
+
+
 @app.route("/scan/status", methods=["GET"])
 def scan_status():
     """Status pencarian frekuensi HT otomatis (0–600 MHz secara default)."""
@@ -2965,6 +3019,88 @@ def stop_record_radio():
     })
 
 
+# ==========================================================
+# DATABASE VFO RECORD (records_db.py)
+# ==========================================================
+# Setiap hasil "Rekam & Simpan" maupun "Rekam & Translate" disimpan sebagai WAV
+# di RECORDINGS_DIR dan dicatat di <DATA_DIR>/rekaman.db beserta info radio,
+# bahasa, durasi, teks Papua & terjemahan (halaman "Rekaman" di frontend).
+records = RecordsDB(DATA_DIR / "rekaman.db", RECORDINGS_DIR)
+
+
+def save_recording_wav(audio: np.ndarray, sr: int) -> Optional[Path]:
+    """Tulis audio bersih ke RECORDINGS_DIR (penamaan radio_<tgl>_<jam>_<bahasa>_<urut>.wav)."""
+    try:
+        stamp_date = time.strftime("%Y%m%d")
+        stamp_time = time.strftime("%H%M%S")
+        rec_lang = (pipeline.current_lang or "ambai").strip().lower()
+        seq = _next_recording_seq(rec_lang)
+        path = RECORDINGS_DIR / f"radio_{stamp_date}_{stamp_time}_{rec_lang}_{seq}.wav"
+        pcm16 = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16)
+        sf.write(str(path), pcm16, int(sr), subtype="PCM_16")
+        pipeline.last_saved_path = str(path)
+        return path
+    except Exception as exc:
+        print(f"[SAVE ERROR] {exc}", file=sys.stderr)
+        return None
+
+
+def recording_meta(raw_meta, radio_name, radio, dev_index) -> dict:
+    """Info radio untuk database: dari frontend (field `meta`), selain itu diturunkan
+    dari sumber/perangkat yang dipakai merekam."""
+    meta = raw_meta if isinstance(raw_meta, dict) else {}
+    source = str(meta.get("source_label") or "").strip()
+    if not source:
+        if radio_name:
+            source = radio_name if radio_name.startswith("Radio") else {
+                "web888": "Radio V1 · Web-888", "hackrf": "Radio V2 · USB lewat server",
+            }.get(radio_name, radio_name)
+        elif dev_index is not None:
+            try:
+                source = str(sd.query_devices(dev_index).get("name") or f"Perangkat {dev_index}")
+            except Exception:
+                source = f"Perangkat {dev_index}"
+
+    def as_int(value):
+        try:
+            return int(round(float(value)))
+        except (TypeError, ValueError):
+            return None
+
+    freq_hz = as_int(meta.get("freq_hz"))
+    if freq_hz is None:
+        freq_hz = _get_last_known_ht_freq()
+    mode = meta.get("mode") or getattr(radio, "mode", None)
+    bandwidth_hz = as_int(meta.get("bandwidth_hz"))
+    if bandwidth_hz is None:
+        bandwidth_hz = as_int(getattr(radio, "bandwidth_hz", None))
+    return {
+        "source": source,
+        "freq_hz": freq_hz,
+        "mode": str(mode).upper() if mode else None,
+        "bandwidth_hz": bandwidth_hz,
+    }
+
+
+def log_recording(kind, meta, saved_path, duration, sr, segments, text_papua="", text_indonesia="") -> Optional[int]:
+    """Catat rekaman ke database; kegagalan database tidak boleh menggagalkan rekaman."""
+    try:
+        return records.add(
+            kind=kind,
+            lang=(pipeline.current_lang or "").strip().lower(),
+            duration_sec=float(duration),
+            sample_rate=int(sr),
+            segments=int(segments),
+            file=saved_path.name if saved_path else None,
+            text_papua=text_papua or "",
+            text_indonesia=text_indonesia or "",
+            **meta,
+        )
+    except Exception as exc:
+        print(f"[RECORDS ERROR] Gagal mencatat rekaman ke database: {exc}", file=sys.stderr)
+        return None
+
+
 @app.route("/record-radio", methods=["POST"])
 def record_radio():
     """
@@ -3024,6 +3160,7 @@ def record_radio():
             radio_name, radio = None, None
         if dev_index is not None and dev_index not in virtual_radios:
             pipeline.last_device_index = dev_index
+        meta = recording_meta(data.get("meta"), radio_name, radio, dev_index)
 
         pipeline.current_phase = "listening"
         pipeline.current_label = "Menunggu sinyal PTT/VOX dari radio…"
@@ -3095,12 +3232,9 @@ def record_radio():
         pipeline.current_label = "Membersihkan audio radio (reduksi noise)…"
         print(f"[API] Cleaning {len(norm_segments)} ucapan audio radio…", file=sys.stderr)
 
-        # PERBAIKAN: sebelumnya file WAV SELALU ditulis ke RECORDINGS_DIR di
-        # sini, tidak peduli tombol mana yang dipakai -- jadi "Rekam &
-        # Translate Audio" pun ikut menyimpan berkas otomatis ke lokal.
-        # Sekarang penyimpanan otomatis ke disk HANYA terjadi saat
-        # skip_translate=True (tombol "Rekam & Simpan Audio"); alur
-        # translate biasa tidak lagi menyimpan berkas otomatis.
+        # Kedua tombol menyimpan WAV ke RECORDINGS_DIR dan mencatatnya di
+        # database VFO Record (lihat records_db.py): "Rekam & Simpan" sebagai
+        # kind 'simpan' (tanpa teks), "Rekam & Translate" sebagai 'terjemah'.
         saved_path = None
         if skip_translate:
             # "Rekam & Simpan Audio": sambung semua ucapan (bisa lebih dari
@@ -3136,19 +3270,8 @@ def record_radio():
             )
 
             pipeline.current_label = "Menyimpan berkas audio rekaman radio…"
-            try:
-                stamp_date = time.strftime("%Y%m%d")
-                stamp_time = time.strftime("%H%M%S")
-                rec_lang = (pipeline.current_lang or "ambai").strip().lower()
-                seq = _next_recording_seq(rec_lang)
-                saved_path = RECORDINGS_DIR / f"radio_{stamp_date}_{stamp_time}_{rec_lang}_{seq}.wav"
-                pcm16_save = (
-                    np.clip(audio_clean, -1.0, 1.0) * 32767.0
-                ).astype(np.int16)
-                sf.write(str(saved_path), pcm16_save, int(sr), subtype="PCM_16")
-                pipeline.last_saved_path = str(saved_path)
-            except Exception as exc:
-                print(f"[SAVE ERROR] {exc}", file=sys.stderr)
+            saved_path = save_recording_wav(audio_clean, int(sr))
+            record_id = log_recording("simpan", meta, saved_path, duration, sr, len(norm_segments))
 
             # "Rekam & Simpan Audio": input suara sudah masuk file rekaman di
             # atas -- berhenti di sini, JANGAN jalankan Whisper/terjemahan.
@@ -3161,6 +3284,7 @@ def record_radio():
                     "text_indonesia": "",
                     "duration_sec": duration,
                     "saved_file": str(saved_path) if saved_path else None,
+                    "record_id": record_id,
                     "lang": pipeline.current_lang,
                     "lang_warning": None if lang_result.get("ok") else lang_result.get("error"),
                 }
@@ -3244,6 +3368,11 @@ def record_radio():
             else ""
         )
 
+        pipeline.current_label = "Menyimpan rekaman ke database…"
+        saved_path = save_recording_wav(audio_clean, int(sr))
+        record_id = log_recording("terjemah", meta, saved_path, duration, sr, len(cleaned_segments),
+                                  text_papua, text_indonesia)
+
         return jsonify(
             {
                 "ok": True,
@@ -3251,6 +3380,7 @@ def record_radio():
                 "text_indonesia": text_indonesia,
                 "duration_sec": duration,
                 "saved_file": str(saved_path) if saved_path else None,
+                "record_id": record_id,
                 "lang": pipeline.current_lang,
                 "lang_warning": None if lang_result.get("ok") else lang_result.get("error"),
             }
@@ -3296,6 +3426,75 @@ def last_audio_wav():
     except Exception as e:
         tb = traceback.format_exc()
         return jsonify({"ok": False, "error": str(e), "traceback": tb}), 500
+
+@app.route("/records", methods=["GET"])
+def records_list():
+    """Daftar rekaman (terbaru dulu). Query: q (cari di teks/catatan/sumber), lang, kind, limit, offset."""
+    try:
+        limit = max(1, min(int(request.args.get("limit", 100)), 500))
+        offset = max(0, int(request.args.get("offset", 0)))
+    except ValueError:
+        return jsonify({"ok": False, "error": "limit/offset harus angka."}), 400
+    total, items = records.list(
+        q=(request.args.get("q") or "").strip(),
+        lang=(request.args.get("lang") or "").strip().lower(),
+        kind=(request.args.get("kind") or "").strip().lower(),
+        limit=limit,
+        offset=offset,
+    )
+    return jsonify({"ok": True, "total": total, "items": items})
+
+
+@app.route("/records/<int:record_id>", methods=["GET"])
+def records_get(record_id):
+    item = records.get(record_id)
+    if item is None:
+        return jsonify({"ok": False, "error": "Rekaman tidak ditemukan."}), 404
+    return jsonify({"ok": True, "item": item})
+
+
+@app.route("/records/<int:record_id>", methods=["PATCH"])
+def records_update(record_id):
+    data = request.get_json(force=True, silent=True) or {}
+    note = data.get("note")
+    if not isinstance(note, str):
+        return jsonify({"ok": False, "error": "Field 'note' (teks) wajib diisi."}), 400
+    if len(note) > NOTE_MAX_CHARS:
+        return jsonify({"ok": False, "error": f"Catatan maksimal {NOTE_MAX_CHARS} karakter."}), 400
+    item = records.update_note(record_id, note)
+    if item is None:
+        return jsonify({"ok": False, "error": "Rekaman tidak ditemukan."}), 404
+    return jsonify({"ok": True, "item": item})
+
+
+@app.route("/records/<int:record_id>", methods=["DELETE"])
+def records_delete(record_id):
+    if not records.delete(record_id):
+        return jsonify({"ok": False, "error": "Rekaman tidak ditemukan."}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/records/<int:record_id>/audio", methods=["GET"])
+def records_audio(record_id):
+    """File WAV rekaman; ?download=1 untuk diunduh dengan nama yang jelas."""
+    item = records.get(record_id)
+    path = records.audio_path(item) if item else None
+    if not path or not path.is_file():
+        return jsonify({"ok": False, "error": "Audio rekaman tidak ditemukan."}), 404
+    stamp = re.sub(r"[^0-9T]", "", (item.get("created_at") or "")[:19]).replace("T", "_")
+    parts = ["rekaman", stamp or str(record_id)]
+    if item.get("freq_hz"):
+        parts.append(f"{item['freq_hz'] / 1e6:.3f}MHz")
+    if item.get("lang"):
+        parts.append(item["lang"])
+    return send_file(
+        str(path),
+        mimetype="audio/wav",
+        as_attachment=request.args.get("download") == "1",
+        download_name="_".join(parts) + ".wav",
+        conditional=True,
+    )
+
 
 @app.route("/translate-text", methods=["POST"])
 def translate_text():

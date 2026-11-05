@@ -176,11 +176,13 @@
     pageHome: $('pageHome'),
     pageSetRadio: $('pageSetRadio'),
     pageTranslate: $('pageTranslate'),
+    pageRecords: $('pageRecords'),
   };
   const navButtons = {
     pageHome: $('navHomeBtn'),
     pageSetRadio: $('navSetRadioBtn'),
     pageTranslate: $('navTranslateBtn'),
+    pageRecords: $('navRecordsBtn'),
   };
 
   function showPage(pageId){
@@ -191,25 +193,46 @@
       navButtons[id].setAttribute('aria-selected', active ? 'true' : 'false');
     });
     if (pageId === 'pageSetRadio') fitSetRadio();
+    if (pageId === 'pageTranslate') fitTranslate();
+    if (pageId === 'pageRecords'){
+      fitRecords();
+      loadRecords();
+    }
   }
 
   // Set Radio dibuat pas satu layar (tanpa scroll halaman): tinggi .radio-console
   // = tinggi jendela dikurangi posisi atasnya, dalam satuan halaman yang sudah
   // di-scale (lihat DESIGN_WIDTH di index.html). Spektrum & waterfall / panel
   // Radio V2 lalu mengisi sisa tinggi lewat flex (style.css "LAYOUT RINGKAS").
-  function fitSetRadio(){
-    const radioConsole = document.querySelector('.radio-console');
+  function fitHeightToWindow(el){
     const inner = $('scaleInner');
-    if (!radioConsole || !inner || pages.pageSetRadio.hidden) return;
+    if (!el || !inner) return;
     const scale = (inner.getBoundingClientRect().width / inner.offsetWidth) || 1;
-    const top = (radioConsole.getBoundingClientRect().top - inner.getBoundingClientRect().top) / scale;
+    const top = (el.getBoundingClientRect().top - inner.getBoundingClientRect().top) / scale;
     const bottomPad = parseFloat(getComputedStyle(document.querySelector('.pages-wrap')).paddingBottom) || 0;
     const available = window.innerHeight / scale - top - bottomPad;
-    radioConsole.style.height = `${Math.max(480, Math.floor(available))}px`;
+    el.style.height = `${Math.max(480, Math.floor(available))}px`;
+  }
+
+  function fitSetRadio(){
+    if (pages.pageSetRadio.hidden) return;
+    fitHeightToWindow(document.querySelector('.radio-console'));
     resizeScopeCanvases();
   }
+
+  // Auto Translate pas satu layar; log dan kotak teks mengisi sisa tinggi.
+  function fitTranslate(){
+    if (pages.pageTranslate.hidden) return;
+    fitHeightToWindow(document.querySelector('.translate-layout'));
+  }
+
+  // Halaman Rekaman juga pas satu layar; tabelnya bergulir di dalam kotaknya.
+  function fitRecords(){
+    if (pages.pageRecords.hidden) return;
+    fitHeightToWindow(document.querySelector('.records-layout'));
+  }
   // Setelah applyScale() di index.html (juga dijadwalkan lewat requestAnimationFrame).
-  window.addEventListener('resize', () => requestAnimationFrame(fitSetRadio));
+  window.addEventListener('resize', () => requestAnimationFrame(() => { fitSetRadio(); fitTranslate(); fitRecords(); }));
 
   Object.entries(navButtons).forEach(([id, btn]) => {
     btn.addEventListener('click', () => showPage(id));
@@ -220,38 +243,6 @@
   });
 
 
-  // Toggle sidebar Frekuensi/Bandwidth (satu-satunya sumber kebenaran: class
-  // .sidebar-open pada .radio-console — dulu ada 2 handler yang bentrok
-  // [salah satunya men-toggle class .collapsed terpisah], itulah sebabnya
-  // klik ikon garis 3 kadang tidak menampilkan sidebar sama sekali).
-  const radioConsoleEl = document.querySelector('.radio-console');
-  const sidebarToggleBtnTop = $('sidebarToggleBtnTop');
-  const sidebarToggleBtnInside = $('sidebarToggleBtn');
-
-  function toggleRadioSidebar(){
-    radioConsoleEl.classList.toggle('sidebar-open');
-  }
-  if (sidebarToggleBtnTop) sidebarToggleBtnTop.addEventListener('click', toggleRadioSidebar);
-  if (sidebarToggleBtnInside) sidebarToggleBtnInside.addEventListener('click', toggleRadioSidebar);
-
-  
-  /* ============================================================
-     TAB FREKUENSI / BANDWIDTH (di sidebar Set Radio)
-     ============================================================ */
-  const tabFrekuensiBtn = $('tabFrekuensiBtn');
-  const tabBandwidthBtn = $('tabBandwidthBtn');
-  const panelFreqEl = $('panelFreq');
-  const panelBwEl = $('panelBw');
-
-  function showFbwTab(tab){
-    const isFreq = tab === 'frekuensi';
-    panelFreqEl.hidden = !isFreq;
-    panelBwEl.hidden = isFreq;
-    tabFrekuensiBtn.classList.toggle('active', isFreq);
-    tabBandwidthBtn.classList.toggle('active', !isFreq);
-  }
-  tabFrekuensiBtn.addEventListener('click', () => showFbwTab('frekuensi'));
-  tabBandwidthBtn.addEventListener('click', () => showFbwTab('bandwidth'));
 
   
   /* ============================================================
@@ -547,7 +538,7 @@
       sdrFreqFailStreak = 0;
       if (sdrFreqOnline !== true){
         sdrFreqOnline = true;
-        log('SDR++: berhasil membaca frekuensi (RigCTL tersambung).', 'ok');
+        log('Frekuensi radio terbaca dari backend.', 'ok');
       }
       if (Number.isFinite(Number(data.offset_hz))){
         freqOffsetHz = Number(data.offset_hz);
@@ -769,11 +760,9 @@
   const brandDot = $('brandDot');
   const brandLabel = $('brandLabel');
 
-  function updateBrandDotFromDevice(){
-    const opt = deviceSelect.options[deviceSelect.selectedIndex];
-    const isCable = !!(opt && /cable/i.test(opt.textContent));
-    brandDot.classList.toggle('offline', !isCable);
-  }
+  // Titik status di header mengikuti koneksi ke backend (lihat startRmsPolling),
+  // bukan nama perangkat input.
+  function updateBrandDotFromDevice(){}
 
   async function loadDevices(){
     deviceSelect.disabled = true;
@@ -805,9 +794,11 @@
         const isWdmKs = /wdm-ks/i.test(hostapi);
         const opt = document.createElement('option');
         opt.value = String(d.index);
-        opt.textContent = isWdmKs
-          ? `[${d.index}] ${d.name} — ${hostapi} ⚠️ kurang stabil`
-          : `[${d.index}] ${d.name} — ${hostapi}`;
+        // Perangkat radio langsung (index negatif) cukup namanya; perangkat audio
+        // lokal diberi nama driver-nya supaya bisa dibedakan.
+        opt.textContent = d.index < 0
+          ? d.name
+          : `${d.name} (${hostapi})${isWdmKs ? ' — kurang stabil' : ''}`;
         deviceSelect.appendChild(opt);
 
         if (/cable/i.test(d.name)){
@@ -961,6 +952,7 @@
         if (backendOnline !== true){
           backendOnline = true;
           brandLabel.textContent = 'TRANSLATE · ONLINE';
+          brandDot.classList.remove('offline');
           log('Terhubung ke backend.', 'ok');
         }
       } catch(err){
@@ -968,6 +960,7 @@
         if (backendOnline !== false && rmsFailStreak > RMS_FAIL_GRACE){
           backendOnline = false;
           brandLabel.textContent = 'TRANSLATE · SERVER OFFLINE';
+          brandDot.classList.add('offline');
           log('Tidak bisa terhubung ke backend (cek apakah server Flask sedang berjalan).', 'err');
         } else if (backendOnline === null){
           brandLabel.textContent = 'TRANSLATE · MENYAMBUNG…';
@@ -979,11 +972,14 @@
       // satu elemennya hilang dari HTML, itu tidak menjatuhkan update
       // status pill + log console di bawah.
       try{
-        rmsValueEl.textContent = Number(data.rms).toExponential(2);
-        meterFill.style.width = clamp((data.rms / 1.2e-4) * 100, 2, 100) + '%';
+        // Skala meter sama dengan backend (/rms): 1.2e-4 = 100%.
+        const levelPct = clamp((data.rms / 1.2e-4) * 100, 0, 100);
+        rmsValueEl.textContent = `${Math.round(levelPct)}%`;
+        meterFill.style.width = Math.max(levelPct, 2) + '%';
         if (thresholdLabel){
-          thresholdLabel.textContent = `Threshold RMS: ${Number(data.threshold).toExponential(1)}`;
+          thresholdLabel.textContent = `Ambang: ${Math.round(clamp((data.threshold / 1.2e-4) * 100, 0, 100))}%`;
         }
+        if (typeof data.squelch_open === 'boolean') setSquelchState(data.squelch_open);
       } catch(err){
         console.error('Gagal update tampilan meter RMS:', err);
       }
@@ -1076,7 +1072,9 @@
           // "Rekam & Simpan Audio" mengirim skipTranslate=true supaya backend
           // HANYA merekam & menyimpan file audio, tanpa Whisper/terjemahan.
           // "Rekam & Translate Audio" (default) tetap seperti semula.
-          skip_translate: skipTranslate
+          skip_translate: skipTranslate,
+          // Info radio untuk database Rekaman (halaman Rekaman).
+          meta: recordMetaForDevice(deviceIndex),
         })
       });
       const data = await safeJson(res);
@@ -1088,6 +1086,7 @@
 
       playLastRecordingBtn.hidden = false;
       logLangWarningIfAny(data);
+      recordsChanged();
 
       if (skipTranslate){
         // Rekam & Simpan Audio: JANGAN isi kotak Whisper/Terjemahan, dan
@@ -1153,7 +1152,7 @@
     // "Berhenti Mendengarkan" SAAT sedang aktif mendengarkan. "Putar Audio
     // Papua" adalah label tombol lain (playLastRecordingBtn) untuk memutar
     // ulang rekaman terakhir, bukan untuk tombol ini.
-    playRadioBtn.innerHTML = playIcon() + 'Rekam &amp; Translate Audio';
+    playRadioBtn.innerHTML = playIcon() + 'Rekam &amp; Terjemahkan';
     deviceSelect.disabled = false;
     applyPhaseToStatusPill('idle');
     log('Berhenti mendengarkan audio radio.', 'warn');
@@ -1197,7 +1196,7 @@
 
       if (!recordSaveActive){
         recordSaveActive = true;
-        recordSaveBtn.innerHTML = pauseIcon() + 'Berhenti &amp; Simpan Audio';
+        recordSaveBtn.innerHTML = pauseIcon() + 'Berhenti &amp; Simpan';
         statusPill.textContent = 'Menunggu sinyal PTT untuk direkam & disimpan…';
         statusPill.classList.remove('busy');
         log('Merekam & menyimpan audio radio (tanpa translate)… klik "Berhenti & Simpan Audio" untuk menghentikan secara manual.', 'info');
@@ -1214,7 +1213,7 @@
         recordSaveActive = false;
         recordSaveCyclePromise = null;
         recordSaveBtn.disabled = false;
-        recordSaveBtn.innerHTML = saveIcon() + 'Rekam &amp; Simpan Audio';
+        recordSaveBtn.innerHTML = saveIcon() + 'Rekam &amp; Simpan';
         applyPhaseToStatusPill('idle');
       }
     });
@@ -1257,7 +1256,6 @@
   function resetTranslateWorkspace(){
     whisperOutput.value = '';
     translationOutput.value = '';
-    if (papuaTextInput) papuaTextInput.value = '';
     if (audioFile) audioFile.value = '';
     if (fileNameEl) fileNameEl.textContent = 'Belum ada berkas dipilih';
     uploadPreviewUrl = null;
@@ -1401,21 +1399,41 @@
     }
   });
 
+  /* ---- Tab sumber suara di Auto Translate (diingat per browser) ---- */
+  const SOURCE_TAB_STORAGE_KEY = 'translateSourceTab';
+  function showSourceTab(tab){
+    document.querySelectorAll('[data-source-tab]').forEach((btn) => {
+      const on = btn.dataset.sourceTab === tab;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    $('sourceRadioPane').hidden = tab !== 'radio';
+    $('sourceUploadPane').hidden = tab !== 'upload';
+    try{ localStorage.setItem(SOURCE_TAB_STORAGE_KEY, tab); } catch(err){ /* abaikan */ }
+  }
+  document.querySelectorAll('[data-source-tab]').forEach((btn) => {
+    btn.addEventListener('click', () => showSourceTab(btn.dataset.sourceTab));
+  });
+  try{
+    const savedSourceTab = localStorage.getItem(SOURCE_TAB_STORAGE_KEY);
+    if (savedSourceTab === 'radio' || savedSourceTab === 'upload') showSourceTab(savedSourceTab);
+  } catch(err){ /* abaikan */ }
+
   /* ============================================================
      TEXT TRANSLATE — POST /translate-text
      ============================================================ */
-  const papuaTextInput = $('papuaTextInput');
+  // Kotak "Teks bahasa Papua" dipakai bersama: diisi hasil rekaman/unggahan,
+  // dan bisa diketik atau diperbaiki sendiri sebelum diterjemahkan.
   const translateTextBtn = $('translateTextBtn');
 
   translateTextBtn.addEventListener('click', async () => {
-    const text = papuaTextInput.value.trim();
+    const text = whisperOutput.value.trim();
     if (!text){
-      log('Ketik teks Papua sebelum menerjemahkan.', 'err');
-      papuaTextInput.focus();
+      log('Isi teks bahasa Papua dulu (rekam, unggah, atau ketik) sebelum menerjemahkan.', 'err');
+      whisperOutput.focus();
       return;
     }
 
-    whisperOutput.value = text;
     translateTextBtn.disabled = true;
     statusPill.textContent = 'Menerjemahkan…';
     statusPill.classList.add('busy');
@@ -1464,14 +1482,11 @@
   const rtltcpStatusText = $('rtltcpStatusText');
   const rtltcpHostInput = $('rtltcpHost');
   const rtltcpPortInput = $('rtltcpPort');
-  const rtltcpApplyBtn = $('rtltcpApplyBtn');
-  const rtltcpStopBtn = $('rtltcpStopBtn');
   const radioSourceSelect = $('radioSourceSelect');
   const networkSourceConfig = $('networkSourceConfig');
-  const hackrfSourceConfig = $('hackrfSourceConfig');
-  const hackrfLnaGainInput = $('hackrfLnaGain');
-  const hackrfVgaGainInput = $('hackrfVgaGain');
-  const hackrfAmpInput = $('hackrfAmp');
+  const toolbarSourceLabel = $('toolbarSourceLabel');
+  const scopeRow = document.querySelector('.scope-row');
+  const scopeEmpty = $('scopeEmpty');
   const axisMinEl = $('axisMin');
   const axisCenterEl = $('axisCenter');
   const axisMaxEl = $('axisMax');
@@ -1485,29 +1500,96 @@
   let waterfallInitialized = false;
   let activeSpectrumSource = null; // 'web888' | 'sdrpp' | 'hackrf' | null
 
-  /* ---- Pilihan sumber radio: Web-888/rtl_tcp (host:port, deteksi otomatis
-     seperti semula) atau HackRF One lewat USB / simulasinya. Pilihan terakhir
-     diingat per browser. ---- */
+  /* ---- Tab Listener / Spectrum dan sumber radio ----
+     Listener = mendengarkan satu frekuensi (spektrum + waterfall, atau panel
+     radio kit untuk Radio V2 di browser). Spectrum = mencari sinyal di rentang
+     lebar (pindai lebar kit untuk Radio V2 di browser, pencarian HT otomatis
+     backend untuk sumber lain). Panel kanan menampilkan pengaturan tab aktif
+     saja. Pilihan sumber & tab diingat per browser. */
   const RADIO_SOURCE_STORAGE_KEY = 'radioSource';
-  function applyRadioSourceUi(){
+  const RADIO_TAB_STORAGE_KEY = 'radioTab';
+  const SOURCE_SHORT_LABEL = {
+    network: 'Radio V1 · Web-888 / rtl_tcp',
+    webusb: 'Radio V2 · USB di browser',
+    hackrf: 'Radio V2 · USB lewat server',
+    'hackrf-sim': 'Radio V2 · simulasi server',
+  };
+  let radioTab = 'listener';
+
+  function applyRadioLayout(){
     const source = radioSourceSelect.value;
+    const webusb = source === 'webusb';
+    const serverRadio = source === 'hackrf' || source === 'hackrf-sim';
+    const spectrumTab = radioTab === 'spectrum';
+    document.querySelectorAll('.radio-tab').forEach((btn) => {
+      const on = btn.dataset.radioTab === radioTab;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    // Tampilan kiri
+    scopeRow.hidden = webusb;
+    $('listenerFrameWrap').hidden = !webusb || spectrumTab;
+    $('sweepView').hidden = !webusb || !spectrumTab;
+    $('scanCard').hidden = webusb || !spectrumTab;
+    // Panel pengaturan kanan
+    $('listenerSettings').hidden = spectrumTab;
+    $('spectrumSettings').hidden = !spectrumTab;
+    $('sweepSettings').hidden = !webusb;
+    $('autoScanSettings').hidden = webusb;
+    // Bagian Listener yang relevan untuk sumber ini
     networkSourceConfig.hidden = source !== 'network';
-    hackrfSourceConfig.hidden = source !== 'hackrf' && source !== 'hackrf-sim';
-    setListenerSourceActive(source === 'webusb');
+    $('webusbSourceConfig').hidden = !webusb;
+    $('gainSection').hidden = !(webusb || serverRadio);
+    $('gainServerNote').hidden = !serverRadio;
+    $('listenerGainsBtn').hidden = !webusb;
+    $('sampleRateRow').hidden = !webusb;
+    $('displaySection').hidden = webusb;
+    $('listenerStatusSection').hidden = !webusb;
+    $('bwWebusbNote').hidden = !webusb;
+    toolbarSourceLabel.textContent = SOURCE_SHORT_LABEL[source] || '';
+    if (spectrumTab && !webusb) startScanPolling(); else stopScanPolling();
+    requestAnimationFrame(() => {
+      fitSetRadio();
+      waterfallInitialized = false;
+    });
   }
+
+  function applyRadioSourceUi(){
+    setListenerSourceActive(radioSourceSelect.value === 'webusb');
+    applyRadioLayout();
+    refreshSquelch();
+  }
+
   try{
     const saved = localStorage.getItem(RADIO_SOURCE_STORAGE_KEY);
     if (saved && [...radioSourceSelect.options].some(o => o.value === saved)) radioSourceSelect.value = saved;
+    const savedTab = localStorage.getItem(RADIO_TAB_STORAGE_KEY);
+    if (savedTab === 'listener' || savedTab === 'spectrum') radioTab = savedTab;
   } catch(err){ /* localStorage bisa diblokir; pakai default */ }
   // Ditunda sampai seluruh script ini selesai dijalankan: jalur "webusb"
   // memakai variabel yang baru dideklarasikan lebih bawah.
   queueMicrotask(applyRadioSourceUi);
   radioSourceSelect.addEventListener('change', () => {
+    if (spectrumRunning) spectrumToggleBtn.click(); // putuskan sumber lama dulu
     applyRadioSourceUi();
     try{ localStorage.setItem(RADIO_SOURCE_STORAGE_KEY, radioSourceSelect.value); } catch(err){ /* abaikan */ }
     const label = radioSourceSelect.options[radioSourceSelect.selectedIndex].textContent;
     log(`Sumber radio dipilih: ${label}. Tekan "Sambungkan" untuk memakai sumber ini.`, 'info');
   });
+  document.querySelectorAll('.radio-tab').forEach((btn) => {
+    btn.addEventListener('click', () => showRadioTab(btn.dataset.radioTab));
+  });
+  function showRadioTab(tab){
+    radioTab = tab;
+    try{ localStorage.setItem(RADIO_TAB_STORAGE_KEY, tab); } catch(err){ /* abaikan */ }
+    applyRadioLayout();
+  }
+
+  /* ---- Tombol Sambungkan/Putuskan (satu-satunya untuk semua sumber) ---- */
+  function setConnectButton(running){
+    spectrumToggleBtn.textContent = running ? 'Putuskan' : 'Sambungkan';
+    spectrumToggleBtn.classList.toggle('is-running', running);
+  }
 
   function isDirectRadioSource(src){
     return src === 'web888' || src === 'hackrf';
@@ -1831,6 +1913,29 @@
     }
   }
 
+  // Skala dB stabil: lantai noise (persentil 20) dan puncak diperhalus antar-frame,
+  // rentang minimal SPEC_MIN_RANGE_DB. Dulu skala mengikuti min/max tiap frame,
+  // sehingga noise selalu memenuhi tinggi grafik dan sinyal sulit dibedakan.
+  const SPEC_MIN_RANGE_DB = 30;
+  let specScale = null; // { floor, peak } dalam dB; di-reset saat radio disambung
+
+  function updateSpecScale(dbArray){
+    const finite = Float32Array.from(dbArray).filter(Number.isFinite).sort();
+    if (!finite.length) return { minDb: -100, maxDb: 0 };
+    const floorNow = finite[Math.floor(finite.length * 0.2)];
+    const peakNow = finite[finite.length - 1];
+    if (!specScale){
+      specScale = { floor: floorNow, peak: peakNow };
+    } else {
+      specScale.floor += (floorNow - specScale.floor) * 0.08;
+      // Puncak naik cepat (sinyal baru langsung terlihat), turun pelan.
+      specScale.peak += (peakNow - specScale.peak) * (peakNow > specScale.peak ? 0.5 : 0.02);
+    }
+    const minDb = specScale.floor - 6;
+    const maxDb = Math.max(specScale.peak + 3, specScale.floor + SPEC_MIN_RANGE_DB);
+    return { minDb, maxDb };
+  }
+
   function drawSpectrumFrame(dbArrayFull, centerFreqHz, sampleRateHzFull){
     const w = spectrumCanvas.width;
     const h = spectrumCanvas.height;
@@ -1924,26 +2029,10 @@
     }
 
     const n = dbArray.length;
+    // Satu skala dB (diperhalus antar-frame) untuk spektrum dan waterfall.
+    const scopeRange = n > 1 ? updateSpecScale(dbArray) : { minDb: -100, maxDb: 0 };
     if (n > 1){
-      let minDb = Infinity, maxDb = -Infinity;
-      for (let i = 0; i < n; i++){
-        if (dbArray[i] < minDb) minDb = dbArray[i];
-        if (dbArray[i] > maxDb) maxDb = dbArray[i];
-      }
-      if (!isFinite(minDb) || !isFinite(maxDb)) {
-        minDb = -100; maxDb = 0;
-      } else if (maxDb - minDb < 6) {
-        // Data nyaris rata (mis. HT tidak transmit, cuma noise lantai).
-        // JANGAN diganti ke rentang absolut (-100..0) -- skala dB di aplikasi
-        // ini (lihat web888_client.py: db = raw-255+cal_db) bisa jauh di luar
-        // -100..0, jadi kalau diganti absolut, garis malah ke-clamp mentok di
-        // tepi atas/bawah dan kelihatan "hilang". Di sini rentang dilebarkan
-        // di SEKITAR nilai asli supaya garis tetap tampil proporsional.
-        const mid = (minDb + maxDb) / 2;
-        minDb = mid - 3; maxDb = mid + 3;
-      }
-      const pad = (maxDb - minDb) * 0.08;
-      minDb -= pad; maxDb += pad;
+      const { minDb, maxDb } = scopeRange;
 
       specCtx.beginPath();
       specCtx.strokeStyle = '#3fe0e0';
@@ -1992,23 +2081,14 @@
       wfCtx.fillRect(0, 0, wfW, wfH);
       waterfallInitialized = true;
     }
-    wfCtx.drawImage(waterfallCanvas, 0, 0, wfW, wfH - 1, 0, 1, wfW, wfH - 1);
+    // Tiap frame menggeser waterfall beberapa piksel (bukan 1 px) supaya terisi
+    // penuh dalam ±7 detik, bukan puluhan detik layar hitam.
+    const rowPx = Math.max(1, Math.round(wfH / 150));
+    wfCtx.drawImage(waterfallCanvas, 0, 0, wfW, wfH - rowPx, 0, rowPx, wfW, wfH - rowPx);
 
     const rowImg = wfCtx.createImageData(wfW, 1);
-    let minDb2 = Infinity, maxDb2 = -Infinity;
-    for (let i = 0; i < n; i++){
-      if (dbArray[i] < minDb2) minDb2 = dbArray[i];
-      if (dbArray[i] > maxDb2) maxDb2 = dbArray[i];
-    }
-    if (!isFinite(minDb2) || !isFinite(maxDb2)) {
-      minDb2 = -100; maxDb2 = 0;
-    } else if (maxDb2 - minDb2 < 6) {
-      // Sama seperti di grafik spektrum di atas: jangan diganti rentang
-      // absolut -- lebarkan di sekitar nilai asli supaya waterfall tetap
-      // tampil (tidak jadi warna rata/kosong) walau sinyalnya nyaris flat.
-      const mid2 = (minDb2 + maxDb2) / 2;
-      minDb2 = mid2 - 3; maxDb2 = mid2 + 3;
-    }
+    const minDb2 = scopeRange.minDb;
+    const maxDb2 = scopeRange.maxDb;
 
     for (let x = 0; x < wfW; x++){
       const off = x * 4;
@@ -2051,7 +2131,7 @@
         rowImg.data[off + 3] = 255;
       }
     }
-    wfCtx.putImageData(rowImg, 0, 0);
+    for (let row = 0; row < rowPx; row++) wfCtx.putImageData(rowImg, 0, row);
 
     // --- label sumbu frekuensi (dalam skala HT) ---
     if (hasAxis){
@@ -2196,27 +2276,32 @@
   function startSpectrum(){
     resizeScopeCanvases();
     waterfallInitialized = false;
+    specScale = null;
     spectrumRunning = true;
-    spectrumToggleBtn.innerHTML = pauseIcon();
-    spectrumStatusPill.textContent = 'Berjalan';
+    setConnectButton(true);
+    scopeEmpty.hidden = true;
+    spectrumStatusPill.textContent = 'Tersambung';
     spectrumStatusPill.classList.add('busy');
     if (spectrumPollTimer) clearTimeout(spectrumPollTimer);
     spectrumFailStreak = 0;
     spectrumPollInFlight = false;
     pollSpectrum(); // polling berikutnya dijadwalkan otomatis di dalam pollSpectrum()
     if (isDirectRadioSource(activeSpectrumSource)) startWeb888AudioMonitor();
+    refreshSquelch();
   }
 
   function stopSpectrumUi(){
     spectrumRunning = false;
-    spectrumToggleBtn.innerHTML = playIcon();
-    spectrumStatusPill.textContent = 'Berhenti';
+    setConnectButton(false);
+    scopeEmpty.hidden = false;
+    spectrumStatusPill.textContent = 'Belum tersambung';
     spectrumStatusPill.classList.remove('busy');
     if (spectrumPollTimer) clearTimeout(spectrumPollTimer);
     spectrumPollTimer = null;
     stopWeb888AudioMonitor();
     baseWfSpanHz = null;
     serverZoomActive = false;
+    refreshSquelch();
   }
 
   spectrumToggleBtn.addEventListener('click', async () => {
@@ -2229,7 +2314,7 @@
       try{
         await fetch(`${API_BASE}/spectrum/stop`, { method: 'POST' });
       } catch(err){ /* abaikan */ }
-      log('Spektrum dihentikan.', 'warn');
+      log('Radio diputuskan.', 'warn');
       return;
     }
     try{
@@ -2242,25 +2327,25 @@
           port: Number(rtltcpPortInput.value) || undefined,
         } : {
           source: radioSourceSelect.value,
-          lna_gain: Number(hackrfLnaGainInput.value),
-          vga_gain: Number(hackrfVgaGainInput.value),
-          amp: hackrfAmpInput.checked,
+          lna_gain: listenerNumber('listenerLna'),
+          vga_gain: listenerNumber('listenerVga'),
+          amp: $('listenerAmp').checked,
         }),
       });
       const data = await safeJson(res);
       if (!data.ok){
-        log(`Gagal memulai spektrum: ${data.error}`, 'err');
+        log(`Gagal menyambungkan radio: ${data.error}`, 'err');
         return;
       }
       activeSpectrumSource = data.source || null;
       baseWfSpanHz = Number(data.wf_span_hz || data.sample_rate_hz) || null;
       serverZoomActive = false;
       if (activeSpectrumSource === 'web888'){
-        log(`Spektrum dimulai (Radio V1 · Web-888 ${data.host}:${data.port}) — audio HT akan ikut diputar di browser.`, 'ok');
+        log(`Tersambung ke Radio V1 · Web-888 ${data.host}:${data.port}; suara HT ikut diputar di browser.`, 'ok');
       } else if (activeSpectrumSource === 'hackrf'){
-        log(`Spektrum dimulai (Radio V2 · ${data.simulate ? 'simulasi server' : 'USB lewat server'}, LNA ${data.lna_gain} dB, VGA ${data.vga_gain} dB) — audio HT akan ikut diputar di browser.`, 'ok');
+        log(`Tersambung ke Radio V2 · ${data.simulate ? 'simulasi server' : 'USB lewat server'} (LNA ${data.lna_gain} dB, VGA ${data.vga_gain} dB); suara HT ikut diputar di browser.`, 'ok');
       } else {
-        log(`Spektrum dimulai (rtl_tcp ${data.host}:${data.port}).`, 'ok');
+        log(`Tersambung ke rtl_tcp ${data.host}:${data.port}.`, 'ok');
       }
       // PERBAIKAN: begitu baru tersambung, radio/Web-888 masih di frekuensi
       // terakhir yang kebetulan tersimpan di perangkat (bisa beda jauh dari
@@ -2272,33 +2357,257 @@
       sendFreqToSdr(currentFreq);
       startSpectrum();
     } catch(err){
-      log(`Gagal menghubungi backend untuk spektrum: ${err.message}`, 'err');
+      log(`Gagal menghubungi backend: ${err.message}`, 'err');
     }
   });
 
-  rtltcpApplyBtn.addEventListener('click', () => {
+  /* ============================================================
+     LISTENER: squelch & Rekam VFO
+     ============================================================ */
+  const squelchSlider = $('squelchSlider');
+  const squelchValueEl = $('squelchValue');
+  const squelchUnitEl = $('squelchUnit');
+  const squelchStateEl = $('squelchState');
+  const squelchNoteEl = $('squelchNote');
+
+  function setSquelchState(open){
+    squelchStateEl.textContent = open ? 'terbuka' : 'tertutup';
+    squelchStateEl.classList.toggle('is-open', open);
+  }
+
+  function disableSquelch(note){
+    squelchSlider.disabled = true;
+    squelchValueEl.textContent = '—';
+    squelchUnitEl.textContent = '';
+    squelchNoteEl.textContent = note;
+  }
+
+  // GET/POST /sdr/squelch: Web-888 dalam dBm (S-meter), Radio V2 lewat server
+  // dalam dB di atas noise. Radio V2 di browser & SDR++ mengatur squelch sendiri.
+  async function refreshSquelch(){
     if (listenerActive){
-      listenerStart();
+      disableSquelch('Squelch Radio V2 di browser diatur di panel radio (bagian VFO).');
       return;
     }
     if (!spectrumRunning){
-      spectrumToggleBtn.click();
-    } else {
-      // sudah jalan -> restart dengan konfigurasi baru
-      stopSpectrumUi();
-      fetch(`${API_BASE}/spectrum/stop`, { method: 'POST' }).finally(() => spectrumToggleBtn.click());
+      disableSquelch('Sambungkan radio untuk mengatur squelch.');
+      return;
+    }
+    try{
+      const data = await safeJson(await fetch(`${API_BASE}/sdr/squelch`));
+      if (!data.ok || !data.supported){
+        disableSquelch('Sumber ini tidak mendukung squelch dari aplikasi (atur di SDR++).');
+        return;
+      }
+      squelchSlider.min = data.min;
+      squelchSlider.max = data.max;
+      squelchSlider.step = data.step;
+      squelchSlider.value = data.value;
+      squelchSlider.disabled = false;
+      setSliderFill(squelchSlider);
+      squelchValueEl.textContent = Number(data.value).toFixed(0);
+      squelchUnitEl.textContent = data.unit;
+      squelchNoteEl.textContent = data.unit === 'dBm'
+        ? 'Suara diteruskan bila kuat sinyal di atas ambang ini.'
+        : 'Suara diteruskan bila sinyal sekian dB di atas noise.';
+      setSquelchState(Boolean(data.open));
+    } catch(err){
+      disableSquelch('Gagal membaca squelch dari backend.');
+    }
+  }
+
+  squelchSlider.addEventListener('input', () => {
+    squelchValueEl.textContent = Number(squelchSlider.value).toFixed(0);
+    setSliderFill(squelchSlider);
+  });
+  squelchSlider.addEventListener('change', async () => {
+    try{
+      const res = await fetch(`${API_BASE}/sdr/squelch`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ value: Number(squelchSlider.value) }),
+      });
+      const data = await safeJson(res);
+      if (data.ok) log(`Squelch diatur ke ${Number(data.value).toFixed(0)} ${data.unit}.`, 'ok');
+      else log(`Gagal mengatur squelch: ${data.error}`, 'warn');
+    } catch(err){
+      log(`Gagal mengatur squelch: ${err.message}`, 'err');
     }
   });
 
-  rtltcpStopBtn.addEventListener('click', async () => {
-    if (listenerActive){
-      listenerStop();
+  /* ---- Rekam VFO: rekam suara radio yang sedang didengar ke database Rekaman ---- */
+  const vfoRecordBtn = $('vfoRecordBtn');
+  const vfoRecordStatus = $('vfoRecordStatus');
+  let vfoRecording = false;
+
+  // Perangkat untuk /record-radio sesuai sumber radio yang sedang tersambung.
+  function vfoRecordDevice(){
+    if (listenerActive) return listenerClient?.status?.running ? WEBUSB_DEVICE_INDEX : null;
+    if (!spectrumRunning) return null;
+    if (activeSpectrumSource === 'web888') return '-888';
+    if (activeSpectrumSource === 'hackrf') return '-1';
+    // SDR++ / rtl_tcp: suaranya masuk lewat perangkat audio lokal yang dipilih di Auto Translate.
+    const local = deviceSelect.value;
+    return local !== '' && Number(local) >= 0 ? local : null;
+  }
+
+  // Perangkat audio lokal (SDR++/VB-Cable): sumbernya nama perangkat itu sendiri.
+  function recordMetaForDevice(deviceIndex){
+    const meta = recordMeta();
+    if (Number(deviceIndex) >= 0){
+      const option = deviceSelect.options[deviceSelect.selectedIndex];
+      meta.source_label = option ? option.textContent : meta.source_label;
+    }
+    return meta;
+  }
+
+  function recordMeta(){
+    const option = radioSourceSelect.options[radioSourceSelect.selectedIndex];
+    return {
+      source_label: option ? option.textContent : '',
+      freq_hz: Math.round(currentFreq),
+      mode: listenerActive ? (listenerClient?.status?.vfo?.mode || listenerModeFromUi()).toUpperCase() : modeSelect.value,
+      bandwidth_hz: listenerActive ? (listenerClient?.status?.vfo?.bandwidthHz ?? null) : Math.round(currentBw),
+    };
+  }
+
+  function setVfoRecordUi(active, text){
+    vfoRecording = active;
+    vfoRecordBtn.textContent = active ? 'Berhenti & simpan' : 'Rekam VFO';
+    vfoRecordBtn.classList.toggle('is-running', active);
+    vfoRecordStatus.textContent = text || '';
+  }
+
+  vfoRecordBtn.addEventListener('click', async () => {
+    if (vfoRecording){
+      vfoRecordBtn.disabled = true;
+      vfoRecordStatus.textContent = 'Menyimpan…';
+      await stopActiveRecording();
+      vfoRecordBtn.disabled = false;
       return;
     }
-    if (spectrumRunning) stopSpectrumUi();
+    const device = vfoRecordDevice();
+    if (device === null){
+      log(listenerActive || spectrumRunning
+        ? 'Rekam VFO: untuk rtl_tcp/SDR++, pilih dulu perangkat input audio di halaman Auto Translate.'
+        : 'Rekam VFO: sambungkan radio dulu.', 'warn');
+      return;
+    }
+    const viaWebusb = device === WEBUSB_DEVICE_INDEX;
+    if (viaWebusb && !(await startWebusbForwarding())) return;
+    const translate = $('vfoRecordTranslate').checked;
+    setVfoRecordUi(true, 'Merekam… tekan lagi untuk berhenti & menyimpan.');
+    log(`Rekam VFO dimulai (${formatMHz(currentFreq)} MHz${translate ? ', sekalian diterjemahkan' : ''}).`, 'info');
     try{
-      await fetch(`${API_BASE}/spectrum/stop`, { method: 'POST' });
-      log('Koneksi sumber radio dihentikan.', 'warn');
+      const res = await fetch(`${API_BASE}/record-radio`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          device_index: Number(device),
+          rms_threshold: 2.0e-5,
+          max_sec: 300,
+          lang: selectedPapuaLang,
+          skip_translate: !translate,
+          meta: recordMeta(),
+        }),
+      });
+      const data = await safeJson(res);
+      if (!data.ok){
+        setVfoRecordUi(false, '');
+        log(`Rekam VFO: ${data.error || 'tidak ada suara yang terekam.'}`, 'warn');
+        return;
+      }
+      setVfoRecordUi(false, `Tersimpan (${Number(data.duration_sec ?? 0).toFixed(1)} dtk). Lihat di halaman Rekaman.`);
+      log(`Rekam VFO tersimpan sebagai rekaman #${data.record_id ?? '?'} (${Number(data.duration_sec ?? 0).toFixed(1)} dtk).`, 'ok');
+      if (translate && data.text_indonesia){
+        whisperOutput.value = data.text_papua || '';
+        translationOutput.value = data.text_indonesia || '';
+      }
+      recordsChanged();
+    } catch(err){
+      setVfoRecordUi(false, '');
+      log(`Rekam VFO gagal: ${err.message}`, 'err');
+    } finally {
+      if (viaWebusb) stopWebusbForwarding();
+    }
+  });
+
+  /* ============================================================
+     SPECTRUM (Radio V1 / V2 lewat server): cari frekuensi HT otomatis
+     lewat backend /scan/*. Hanya dipolling selama tab Spectrum tampil.
+     ============================================================ */
+  const scanStatusEl = $('scanStatus');
+  const scanCardLabel = $('scanCardLabel');
+  const scanCardFreq = $('scanCardFreq');
+  let scanPollTimer = null;
+
+  function startScanPolling(){
+    if (scanPollTimer) return;
+    pollScan();
+    scanPollTimer = setInterval(pollScan, 1000);
+  }
+
+  function stopScanPolling(){
+    if (scanPollTimer) clearInterval(scanPollTimer);
+    scanPollTimer = null;
+  }
+
+  async function pollScan(){
+    try{
+      const s = await safeJson(await fetch(`${API_BASE}/scan/status`));
+      if (!s.ok) return;
+      const state = !s.enabled ? 'idle' : s.state;
+      const label = { idle: 'Pencarian berhenti', scanning: 'Mencari sinyal…', locked: 'Sinyal ditemukan' }[state] || state;
+      scanCardLabel.textContent = label;
+      scanCardFreq.textContent = state === 'locked' ? listenerMhz(s.locked_hz) : state === 'scanning' ? listenerMhz(s.current_hz) : '—';
+      $('scanCard').classList.toggle('is-locked', state === 'locked');
+      const rows = [
+        ['Status', label],
+        ['Rentang', `${listenerMhz(s.min_hz)} – ${listenerMhz(s.max_hz)}`],
+        ['Langkah', `${(s.step_hz / 1000).toFixed(1)} kHz · jeda ${Math.round(s.dwell_sec * 1000)} ms`],
+        ['Posisi', listenerMhz(s.current_hz)],
+        ['Terkunci', s.locked_hz ? listenerMhz(s.locked_hz) : '—'],
+        ['Error', s.error || '—'],
+      ];
+      scanStatusEl.replaceChildren(...rows.flatMap(([key, value]) => {
+        const dt = document.createElement('dt'); dt.textContent = key;
+        const dd = document.createElement('dd'); dd.textContent = String(value);
+        return [dt, dd];
+      }));
+    } catch(err){ /* backend sibuk/mati: coba lagi di tick berikutnya */ }
+  }
+
+  $('scanStartBtn').addEventListener('click', async () => {
+    if (!spectrumRunning){
+      log('Cari HT otomatis: sambungkan radio dulu.', 'warn');
+      return;
+    }
+    const mhz = (id) => Number(String($(id).value).replace(',', '.'));
+    const config = {
+      min_hz: Math.round(mhz('scanMin') * 1e6),
+      max_hz: Math.round(mhz('scanMax') * 1e6),
+      step_hz: Math.round(mhz('scanStep') * 1e3),
+      dwell_sec: mhz('scanDwell') / 1000,
+    };
+    if (!(config.min_hz > 0 && config.max_hz > config.min_hz && config.step_hz > 0 && config.dwell_sec > 0)){
+      log('Cari HT otomatis: isi rentang, langkah dan jeda dengan angka yang benar.', 'warn');
+      return;
+    }
+    try{
+      await fetch(`${API_BASE}/scan/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) });
+      const data = await safeJson(await fetch(`${API_BASE}/scan/start`, { method: 'POST' }));
+      if (data.ok) log(`Cari HT otomatis dimulai (${formatMHz(config.min_hz)}–${formatMHz(config.max_hz)} MHz).`, 'ok');
+      else log(`Gagal memulai pencarian: ${data.error}`, 'warn');
+      pollScan();
+    } catch(err){
+      log(`Gagal memulai pencarian: ${err.message}`, 'err');
+    }
+  });
+  $('scanStopBtn').addEventListener('click', async () => {
+    try{
+      await fetch(`${API_BASE}/scan/stop`, { method: 'POST' });
+      log('Cari HT otomatis dihentikan.', 'warn');
+      pollScan();
     } catch(err){ /* abaikan */ }
   });
 
@@ -2308,22 +2617,20 @@
      cuma host yang mengendalikannya lewat postMessage
      (static/hackrf-listener-client.js, docs/EMBED_API.md di repo kit).
      Selama Sumber Radio = "webusb":
-       - spektrum/waterfall di atas digambar dari receiver:spectrum,
+       - tab Listener menampilkan panel radio kit (spektrum, waterfall, VFO),
+       - tab Spectrum menampilkan hasil pindai lebar (receiver:sweep),
        - panel Frekuensi, Mode dan Volume mengendalikan VFO kit,
        - polling /sdr/frequency & /sdr/mode ke backend dijeda.
      Iframe dimuat saat sumber ini pertama kali dipilih dan TIDAK
      pernah dilepas lagi (cukup disembunyikan): reload/unmount iframe
      menghentikan radio.
      ============================================================ */
-  const listenerPanel = $('listenerPanel');
   const listenerFrame = $('listenerFrame');
-  const listenerStatusPill = $('listenerStatusPill');
   const listenerStatusEl = $('listenerStatus');
   const listenerMockInput = $('listenerMock');
   const listenerMarkersEl = $('listenerMarkers');
   const listenerSweepCanvas = $('listenerSweepCanvas');
   const listenerSweepInfo = $('listenerSweepInfo');
-  const webusbSourceConfig = $('webusbSourceConfig');
 
   // Target VFO digeser sejauh ini dari pusat RX supaya tidak jatuh di DC spike HackRF.
   const LISTENER_DC_OFFSET_HZ = 250000;
@@ -2364,6 +2671,7 @@
   let listenerLastBw = null;
   let listenerReceiverRev = null;  // tune.receiverRev terakhir dari receiver:status kit
   let listenerSweepActive = false; // wide scan sedang berjalan (fase selain idle)
+  let listenerKitSweepRange = null; // rentang pindai terakhir yang dilaporkan kit
 
   // Perangkat "HackRF WebUSB" di dropdown Radio Input Device (WEBUSB_VIRTUAL_DEVICE_INDEX backend).
   const WEBUSB_DEVICE_INDEX = '-2';
@@ -2404,12 +2712,12 @@
       listenerClient.on('audio', onListenerAudio);
       // Kit yang dimuat ulang mulai menghitung receiverRev dari awal lagi.
       listenerClient.on('hello', () => { listenerReceiverRev = null; });
-      listenerStatusPill.textContent = 'Memuat…';
+      spectrumStatusPill.textContent = 'Memuat panel radio…';
       listenerClient.ready.then((hello) => {
-        listenerStatusPill.textContent = 'Siap';
+        if (listenerActive) spectrumStatusPill.textContent = 'Belum tersambung';
         listenerMockInput.disabled = !hello.mockAvailable;
         if (!hello.mockAvailable) listenerMockInput.checked = false;
-        log(`Radio V2: panel radio siap (WebUSB ${hello.webusb ? 'tersedia' : 'TIDAK tersedia'}${hello.mockAvailable ? ', Mock SDR tersedia' : ''}).`, hello.webusb ? 'ok' : 'warn');
+        log(`Radio V2: panel radio siap (WebUSB ${hello.webusb ? 'tersedia' : 'TIDAK tersedia'}${hello.mockAvailable ? ', mode simulasi tersedia' : ''}).`, hello.webusb ? 'ok' : 'warn');
         if (!hello.webusb) log(`Radio V2: ${LISTENER_CODE_TEXT.NO_WEBUSB}`, 'warn');
         listenerClient.appearance({ theme: 'dark', lang: 'id' }).then((r) => { if (!r.ok) reportListener('tampilan', r); });
         if (webusbForwarding || listenerSweepActive) listenerUpdateSubscription();
@@ -2421,7 +2729,7 @@
 
   // Spektrum & waterfall Radio V2 tampil di panel radio kit sendiri, jadi halaman
   // ini tidak berlangganan spektrum RX. Langganan dibuka hanya untuk:
-  //   - grafik wide scan di kolom samping (receiver:sweep butuh spectrum: true),
+  //   - grafik pindai lebar di tab Spectrum (receiver:sweep butuh spectrum: true),
   //     selama scan berjalan;
   //   - audio, selama rekaman Auto Translate memakai Radio V2 di browser.
   function listenerUpdateSubscription(){
@@ -2437,10 +2745,6 @@
   function setListenerSourceActive(active){
     if (active === listenerActive) return;
     listenerActive = active;
-    listenerPanel.hidden = !active;
-    webusbSourceConfig.hidden = !active;
-    // Panel radio kit menggantikan spektrum halaman (style.css .is-webusb).
-    document.querySelector('.radio-console').classList.toggle('is-webusb', active);
     if (active){
       // Sumber backend (Web-888 / rtl_tcp / HackRF USB) dimatikan: satu HackRF
       // tidak bisa dipegang backend dan browser sekaligus.
@@ -2459,8 +2763,8 @@
   }
 
   function setListenerScopeUi(running, mock){
-    spectrumToggleBtn.innerHTML = running ? pauseIcon() : playIcon();
-    spectrumStatusPill.textContent = running ? (mock ? 'MOCK · bukan RF' : 'Berjalan') : 'Berhenti';
+    setConnectButton(running);
+    spectrumStatusPill.textContent = running ? (mock ? 'Simulasi · bukan RF' : 'Tersambung') : 'Belum tersambung';
     spectrumStatusPill.classList.toggle('busy', running);
   }
 
@@ -2545,8 +2849,6 @@
     };
   }
 
-  $('listenerStartBtn').addEventListener('click', listenerStart);
-  $('listenerStopBtn').addEventListener('click', listenerStop);
   $('listenerListenBtn').addEventListener('click', async () => {
     const client = await ensureListener();
     reportListener('dengarkan', await client.listen(true));
@@ -2568,7 +2870,6 @@
     reportListener('atur rentang scan', await client.sweepConfig(listenerSweepRange()));
   });
   $('listenerSweepStartBtn').addEventListener('click', async () => {
-    $('listenerSweepDetails').open = true;
     const client = await ensureListener();
     const mock = listenerMockInput.checked;
     listenerWithRecordingConfirm(mock ? 'mulai pindai (simulasi)' : 'mulai pindai',
@@ -2605,28 +2906,30 @@
 
   function onListenerStatus(status){
     const mock = status.mock;
-    let pill = 'Siap';
-    if (status.busy === 'sweep') pill = mock ? 'Pindai · SIMULASI' : 'Pindai';
-    else if (status.running) pill = mock ? 'RX · MOCK (bukan RF)' : 'RX berjalan';
-    else if (status.connected) pill = mock ? 'MOCK tersambung' : 'Tersambung';
-    listenerStatusPill.textContent = pill;
+    // Kolom rentang pindai mengikuti rentang di kit bila rentang kit berubah
+    // (mis. diatur operator di dalam panel radio); ketikan sendiri tidak ditimpa.
+    const kitRange = `${status.sweep.startHz}-${status.sweep.stopHz}`;
+    if (kitRange !== listenerKitSweepRange){
+      listenerKitSweepRange = kitRange;
+      $('listenerSweepStart').value = String(Math.round(status.sweep.startHz / 1e3) / 1e3);
+      $('listenerSweepStop').value = String(Math.round(status.sweep.stopHz / 1e3) / 1e3);
+    }
     const sweepActive = status.sweep.phase !== 'idle';
     if (sweepActive !== listenerSweepActive){
       listenerSweepActive = sweepActive;
       listenerUpdateSubscription();
     }
-    listenerStatusPill.classList.toggle('busy', status.running || status.busy !== 'none');
 
     const vfo = status.vfo;
     const rows = [
-      ['Perangkat', status.connected ? (mock ? 'Mock SDR (bukan RF nyata)' : 'Radio V2 (USB)') : 'Belum tersambung'],
-      ['RX', status.running ? 'Berjalan' : 'Berhenti'],
+      ['Perangkat', status.connected ? (mock ? 'Simulasi (bukan RF nyata)' : 'Radio V2 (USB)') : 'Belum tersambung'],
+      ['Listener', status.running ? 'Berjalan' : 'Berhenti'],
       ['Pusat RX', listenerMhz(status.centerHz)],
       ['Sample rate', status.sampleRateHz ? `${status.sampleRateHz / 1e6} MSPS` : '—'],
       ['VFO', vfo ? `${listenerMhz(vfo.frequencyHz)} · ${vfo.mode.toUpperCase()} · ${vfo.enabled ? 'terdengar' : 'bisu'}` : '—'],
       ['Audio', { none: 'mati', suspended: 'ditahan browser', running: 'aktif' }[status.audio] || status.audio],
       ['Squelch', status.squelchOpen ? 'terbuka' : 'tertutup'],
-      ['Wide scan', `${{ idle: 'berhenti', starting: 'memulai', active: 'berjalan', stopping: 'menghentikan' }[status.sweep.phase] || status.sweep.phase} · ${listenerMhz(status.sweep.startHz)} – ${listenerMhz(status.sweep.stopHz)}`],
+      ['Pindai lebar', `${{ idle: 'berhenti', starting: 'memulai', active: 'berjalan', stopping: 'menghentikan' }[status.sweep.phase] || status.sweep.phase} · ${listenerMhz(status.sweep.startHz)} – ${listenerMhz(status.sweep.stopHz)}`],
       ['Error', status.error ? (LISTENER_STATUS_ERROR_TEXT[status.error.code] || status.error.code) : '—'],
     ];
     listenerStatusEl.replaceChildren(...rows.flatMap(([key, value]) => {
@@ -2637,8 +2940,13 @@
 
     if (!listenerActive) return;
     setListenerScopeUi(status.running, mock);
+    if (status.busy === 'sweep'){
+      setConnectButton(false);
+      spectrumStatusPill.textContent = mock ? 'Pindai lebar · simulasi' : 'Pindai lebar';
+      spectrumStatusPill.classList.add('busy');
+    }
     setRtltcpStatus(status.connected, status.connected
-      ? (mock ? 'MOCK SDR tersambung (bukan RF nyata).' : 'Radio V2 tersambung.')
+      ? (mock ? 'Simulasi tersambung (bukan RF nyata).' : 'Radio V2 tersambung.')
       : 'Radio V2 belum tersambung.');
     // Hanya ikut frekuensi/mode kit bila OPERATOR menala di dalam kit
     // (tune.receiverRev naik); status awal kit tidak boleh menimpa panel ini.
@@ -2654,7 +2962,11 @@
     else if (vfo.mode === 'nfm' && !['FM', 'NFM'].includes(modeSelect.value)) modeSelect.value = 'NFM';
   }
 
+  // Frame pindai terakhir (untuk sumbu, hover dan klik-untuk-mendengarkan).
+  let lastSweepFrame = null;
+
   function onListenerSweep(frame){
+    lastSweepFrame = frame;
     const canvas = listenerSweepCanvas;
     const dpr = window.devicePixelRatio || 1;
     const w = Math.max(1, Math.round(canvas.clientWidth * dpr));
@@ -2665,9 +2977,20 @@
     let min = Infinity, max = -Infinity;
     for (const v of bins){ if (v > -199){ if (v < min) min = v; if (v > max) max = v; } }
     if (!Number.isFinite(min)) return;
-    min -= 5; max += 5;
+    min -= 5; max = Math.max(max + 5, min + 30);
     ctx.fillStyle = '#030b0c';
     ctx.fillRect(0, 0, w, h);
+    // Garis bantu horizontal tiap 10 dB.
+    ctx.strokeStyle = 'rgba(88,214,214,0.12)';
+    ctx.lineWidth = 1;
+    ctx.font = `${Math.round(11 * dpr)}px sans-serif`;
+    ctx.fillStyle = 'rgba(170,230,230,0.7)';
+    ctx.textBaseline = 'middle';
+    for (let db = Math.ceil(min / 10) * 10; db <= max; db += 10){
+      const y = h - ((db - min) / (max - min)) * h;
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
+      ctx.fillText(`${db} dB`, 6 * dpr, y);
+    }
     ctx.strokeStyle = '#f2b544';
     ctx.lineWidth = 1.5 * dpr;
     ctx.beginPath();
@@ -2684,9 +3007,41 @@
       ctx.textAlign = 'right';
       ctx.textBaseline = 'top';
       ctx.fillText('SIMULASI · BUKAN RF NYATA', w - 8, 6);
+      ctx.textAlign = 'left';
     }
-    listenerSweepInfo.textContent = `${simulated ? 'SIMULASI · ' : ''}${listenerMhz(frame.startHz)} – ${listenerMhz(frame.stopHz)} · ${bins.length} bin · ${min.toFixed(0)}..${max.toFixed(0)} dB`;
+    $('sweepAxisMin').textContent = listenerMhz(frame.startHz);
+    $('sweepAxisCenter').textContent = listenerMhz((frame.startHz + frame.stopHz) / 2);
+    $('sweepAxisMax').textContent = listenerMhz(frame.stopHz);
+    listenerSweepInfo.textContent = `${simulated ? 'SIMULASI · ' : ''}${listenerMhz(frame.startHz)} – ${listenerMhz(frame.stopHz)} · ${bins.length} titik`;
   }
+
+  function sweepFreqAt(event){
+    if (!lastSweepFrame) return null;
+    const rect = listenerSweepCanvas.getBoundingClientRect();
+    const ratio = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    return Math.round(lastSweepFrame.startHz + ratio * (lastSweepFrame.stopHz - lastSweepFrame.startHz));
+  }
+
+  listenerSweepCanvas.addEventListener('mousemove', (e) => {
+    const hz = sweepFreqAt(e);
+    const hover = $('sweepHover');
+    if (hz == null){ hover.hidden = true; return; }
+    const rect = listenerSweepCanvas.getBoundingClientRect();
+    hover.hidden = false;
+    hover.textContent = `${formatMHz(hz)} MHz`;
+    hover.style.left = `${clamp(e.clientX - rect.left, 40, rect.width - 40)}px`;
+  });
+  listenerSweepCanvas.addEventListener('mouseleave', () => { $('sweepHover').hidden = true; });
+  // Klik puncak sinyal -> hentikan pindai, lalu dengarkan frekuensi itu di tab Listener.
+  listenerSweepCanvas.addEventListener('click', async (e) => {
+    const hz = sweepFreqAt(e);
+    if (hz == null || !listenerClient) return;
+    if (listenerClient.status?.busy === 'sweep'){
+      reportListener('hentikan pindai', await listenerClient.sweepStop({ resumeRx: true }));
+    }
+    commitFreqDisplay(hz, 'klik hasil pindai');
+    showRadioTab('listener');
+  });
 
   function onListenerMarkers(list){
     if (!list.markers.length){
@@ -2861,6 +3216,19 @@
   const videoPlayBtn = $('videoPlayBtn');
   const videoCaption = $('videoCaption');
 
+  // Panel video (paling besar di Home) disembunyikan selama file videonya belum
+  // ada (404), supaya Home tidak dibuka dengan kotak kosong yang tidak bisa diputar.
+  if (INTRO_VIDEO_URL){
+    const intro = resolveVideoSource(INTRO_VIDEO_URL);
+    if (intro.type === 'direct'){
+      fetch(intro.directUrl, { method: 'HEAD' }).then((res) => {
+        if (!res.ok) document.querySelector('.video-panel').hidden = true;
+      }).catch(() => {});
+    }
+  } else {
+    document.querySelector('.video-panel').hidden = true;
+  }
+
   if (introVideoEl && videoPlayBtn){
     // PERBAIKAN: sebelumnya hanya tag <video> yang dipakai, jadi kalau
     // INTRO_VIDEO_URL diisi link YouTube (atau format lain yang tidak bisa
@@ -2955,11 +3323,194 @@
   if (volumeSlider) setSliderFill(volumeSlider);
   applyRemoteFreq(currentFreq);
   applyRemoteBw(currentBw);
-  showFbwTab('frekuensi');
   showPage('pageHome');
   setRtltcpStatus(false, 'Belum tersambung');
 
   log('Menghubungkan ke backend…', 'info');
+
+  /* ============================================================
+     REKAMAN — database rekaman VFO (records_db.py, /records)
+     Setiap Rekam VFO / Rekam & Simpan / Rekam & Translate tersimpan
+     otomatis dengan info radio, teks Papua & terjemahan.
+     ============================================================ */
+  const RECORDS_PAGE_SIZE = 50;
+  const recordsBody = $('recordsBody');
+  const recordsSearch = $('recordsSearch');
+  const recordsLang = $('recordsLang');
+  const recordsKind = $('recordsKind');
+  const recordsCount = $('recordsCount');
+  const recordsEmpty = $('recordsEmpty');
+  const recordsPrevBtn = $('recordsPrevBtn');
+  const recordsNextBtn = $('recordsNextBtn');
+  const recDetailAudio = $('recDetailAudio');
+  const recDetailNote = $('recDetailNote');
+  const LANG_LABEL = { ambai: 'Ambai', biak: 'Biak' };
+  let recordsOffset = 0;
+  let recordsTotal = 0;
+  let recordsSelected = null;
+  let recordsSearchTimer = null;
+
+  function recordTime(iso){
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso || '—';
+    const pad = (v) => String(v).padStart(2, '0');
+    return `${pad(d.getDate())}/${pad(d.getMonth() + 1)} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  function recordDuration(sec){
+    const total = Math.round(Number(sec) || 0);
+    return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+  }
+
+  function recordSummary(item){
+    if (item.text_indonesia) return item.text_indonesia;
+    if (item.text_papua) return item.text_papua;
+    return item.kind === 'simpan' ? '(rekaman saja, belum diterjemahkan)' : '(tidak ada teks)';
+  }
+
+  // Dipanggil setelah rekaman baru tersimpan: muat ulang bila halaman Rekaman terbuka.
+  function recordsChanged(){
+    if (!pages.pageRecords.hidden) loadRecords();
+  }
+
+  async function loadRecords(){
+    const params = new URLSearchParams({
+      q: recordsSearch.value.trim(),
+      lang: recordsLang.value,
+      kind: recordsKind.value,
+      limit: String(RECORDS_PAGE_SIZE),
+      offset: String(recordsOffset),
+    });
+    try{
+      const data = await safeJson(await fetch(`${API_BASE}/records?${params}`));
+      if (!data.ok) throw new Error(data.error || 'gagal');
+      recordsTotal = data.total;
+      recordsBody.replaceChildren(...data.items.map((item) => {
+        const tr = document.createElement('tr');
+        tr.dataset.recordId = String(item.id);
+        tr.tabIndex = 0;
+        tr.classList.toggle('is-selected', recordsSelected === item.id);
+        const cells = [
+          recordTime(item.created_at),
+          item.source || '—',
+          item.freq_hz ? `${formatMHz(item.freq_hz)}` : '—',
+          item.mode || '—',
+          recordDuration(item.duration_sec),
+          LANG_LABEL[item.lang] || item.lang || '—',
+          recordSummary(item),
+        ];
+        cells.forEach((text, i) => {
+          const td = document.createElement('td');
+          td.textContent = text;
+          if (i === 6) td.className = 'records-summary';
+          tr.appendChild(td);
+        });
+        return tr;
+      }));
+      recordsEmpty.hidden = data.items.length > 0;
+      const from = data.total ? recordsOffset + 1 : 0;
+      const to = recordsOffset + data.items.length;
+      recordsCount.textContent = `${from}–${to} dari ${data.total} rekaman`;
+      recordsPrevBtn.disabled = recordsOffset === 0;
+      recordsNextBtn.disabled = to >= data.total;
+    } catch(err){
+      log(`Gagal memuat daftar rekaman: ${err.message}`, 'err');
+    }
+  }
+
+  async function showRecord(id){
+    try{
+      const data = await safeJson(await fetch(`${API_BASE}/records/${id}`));
+      if (!data.ok) throw new Error(data.error || 'tidak ditemukan');
+      const item = data.item;
+      recordsSelected = item.id;
+      recordsBody.querySelectorAll('tr').forEach((tr) => tr.classList.toggle('is-selected', Number(tr.dataset.recordId) === item.id));
+      $('recordsDetailEmpty').hidden = true;
+      $('recordsDetailBody').hidden = false;
+      $('recDetailId').textContent = `#${item.id}`;
+      const rows = [
+        ['Waktu', recordTime(item.created_at)],
+        ['Sumber', item.source || '—'],
+        ['Frekuensi', item.freq_hz ? `${formatMHz(item.freq_hz)} MHz` : '—'],
+        ['Mode', `${item.mode || '—'}${item.bandwidth_hz ? ` · ${(item.bandwidth_hz / 1000).toFixed(1)} kHz` : ''}`],
+        ['Durasi', `${recordDuration(item.duration_sec)} (${item.segments || 1} ucapan)`],
+        ['Bahasa', LANG_LABEL[item.lang] || item.lang || '—'],
+      ];
+      $('recDetailMeta').replaceChildren(...rows.flatMap(([key, value]) => {
+        const dt = document.createElement('dt'); dt.textContent = key;
+        const dd = document.createElement('dd'); dd.textContent = value;
+        return [dt, dd];
+      }));
+      $('recDetailPapua').textContent = item.text_papua || '—';
+      $('recDetailIndonesia').textContent = item.text_indonesia || '—';
+      recDetailNote.value = item.note || '';
+      recDetailAudio.hidden = !item.has_audio;
+      if (item.has_audio){
+        recDetailAudio.src = `${API_BASE}/records/${item.id}/audio`;
+        $('recDetailDownload').href = `${API_BASE}/records/${item.id}/audio?download=1`;
+      } else {
+        recDetailAudio.removeAttribute('src');
+      }
+      $('recDetailDownload').hidden = !item.has_audio;
+    } catch(err){
+      log(`Gagal membuka rekaman: ${err.message}`, 'err');
+    }
+  }
+
+  recordsBody.addEventListener('click', (e) => {
+    const tr = e.target.closest('tr[data-record-id]');
+    if (tr) showRecord(Number(tr.dataset.recordId));
+  });
+  recordsBody.addEventListener('keydown', (e) => {
+    const tr = e.target.closest('tr[data-record-id]');
+    if (tr && (e.key === 'Enter' || e.key === ' ')){
+      e.preventDefault();
+      showRecord(Number(tr.dataset.recordId));
+    }
+  });
+  recordsSearch.addEventListener('input', () => {
+    clearTimeout(recordsSearchTimer);
+    recordsSearchTimer = setTimeout(() => { recordsOffset = 0; loadRecords(); }, 300);
+  });
+  [recordsLang, recordsKind].forEach((el) => el.addEventListener('change', () => { recordsOffset = 0; loadRecords(); }));
+  $('recordsRefreshBtn').addEventListener('click', loadRecords);
+  recordsPrevBtn.addEventListener('click', () => { recordsOffset = Math.max(0, recordsOffset - RECORDS_PAGE_SIZE); loadRecords(); });
+  recordsNextBtn.addEventListener('click', () => { recordsOffset += RECORDS_PAGE_SIZE; loadRecords(); });
+
+  $('recDetailSaveNote').addEventListener('click', async () => {
+    if (recordsSelected == null) return;
+    try{
+      const res = await fetch(`${API_BASE}/records/${recordsSelected}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ note: recDetailNote.value }),
+      });
+      const data = await safeJson(res);
+      if (!data.ok) throw new Error(data.error || 'gagal');
+      log(`Catatan rekaman #${recordsSelected} disimpan.`, 'ok');
+      loadRecords();
+    } catch(err){
+      log(`Gagal menyimpan catatan: ${err.message}`, 'err');
+    }
+  });
+
+  $('recDetailDelete').addEventListener('click', async () => {
+    if (recordsSelected == null) return;
+    if (!window.confirm(`Hapus rekaman #${recordsSelected} beserta file audionya? Tindakan ini tidak bisa dibatalkan.`)) return;
+    try{
+      const data = await safeJson(await fetch(`${API_BASE}/records/${recordsSelected}`, { method: 'DELETE' }));
+      if (!data.ok) throw new Error(data.error || 'gagal');
+      log(`Rekaman #${recordsSelected} dihapus.`, 'warn');
+      recordsSelected = null;
+      recDetailAudio.pause();
+      $('recordsDetailBody').hidden = true;
+      $('recordsDetailEmpty').hidden = false;
+      loadRecords();
+    } catch(err){
+      log(`Gagal menghapus rekaman: ${err.message}`, 'err');
+    }
+  });
+
   /* ============================================================
      APLIKASI (launcher/installer): tombol "Tutup Aplikasi" dan wizard
      "Model AI". Keduanya hanya tampil bila GET /app/info menjawab

@@ -170,13 +170,14 @@ async function main() {
 		check('Set Radio pas satu layar (tanpa scroll halaman)', layout.pageScroll <= 4, `scroll ${layout.pageScroll}px`);
 
 		await page.evaluate(`document.getElementById('listenerMock').checked = true`);
-		await expectResult(page, 'start {mock: true, listen: true} (klik operator)', 'host:start', () => realClick(page, 'listenerStartBtn'), 20_000);
+		await expectResult(page, 'start {mock: true, listen: true} (klik operator)', 'host:start', () => realClick(page, 'spectrumToggleBtn'), 20_000);
 		const audio = await page.waitFor(`document.querySelector('#listenerStatus dd:nth-of-type(6)')?.textContent === 'aktif'`, 5_000);
 		check('audio VFO aktif (tidak ditahan browser)', audio, await page.evaluate(`document.querySelector('#listenerStatus dd:nth-of-type(6)')?.textContent`));
 		const gains = await page.evaluate(resultOf('host:gains'));
 		check('gains (dikirim sebelum start)', gains?.code === 'OK', gains?.code);
 		check('tanpa langganan spektrum (spektrum tampil di panel kit)', await page.evaluate(`!window.__kit.types['receiver:spectrum']`));
-		check('label MOCK tampil di toolbar', /MOCK/.test(await page.evaluate(`document.getElementById('spectrumStatusPill').textContent`)));
+		check('label simulasi tampil di toolbar', /Simulasi/.test(await page.evaluate(`document.getElementById('spectrumStatusPill').textContent`)));
+		check('tombol toolbar berubah jadi Putuskan', (await page.evaluate(`document.getElementById('spectrumToggleBtn').textContent`)) === 'Putuskan');
 
 		await expectResult(page, 'tala dekat (geser VFO)', 'host:vfo', `${setValue('freqManual', '160.000')}; ${click('freqSetBtn')}`);
 		await expectResult(page, 'tune jauh (pindah pusat RX)', 'host:tune', `${setValue('freqManual', '433.920')}; ${click('freqSetBtn')}`);
@@ -189,14 +190,25 @@ async function main() {
 		check('marker tampil di daftar', markerShown);
 		if (markerShown) await expectResult(page, 'marker-remove', 'host:marker-remove', `document.querySelector('#listenerMarkers button[data-marker-id]').click()`);
 
+		// Tab Spectrum: grafik pindai lebar & pengaturannya menggantikan panel radio.
+		await page.evaluate(click('radioTabSpectrum'));
+		const spectrumTab = await page.evaluate(`({
+			sweep: !document.getElementById('sweepView').hidden,
+			kitHidden: document.getElementById('listenerFrameWrap').hidden,
+			settings: !document.getElementById('spectrumSettings').hidden && document.getElementById('listenerSettings').hidden,
+		})`);
+		check('tab Spectrum: grafik pindai & pengaturan Spectrum tampil, Listener tersembunyi',
+			spectrumTab.sweep && spectrumTab.kitHidden && spectrumTab.settings, JSON.stringify(spectrumTab));
 		await expectResult(page, 'sweep-config 400–500 MHz', 'host:sweep-config', `${setValue('listenerSweepStart', '400')}; ${setValue('listenerSweepStop', '500')}; ${click('listenerSweepConfigBtn')}`);
 		await expectResult(page, 'sweepStart {mock: true}', 'host:sweep-start', click('listenerSweepStartBtn'), 20_000);
 		const sweep = await page.waitFor(`(window.__kit.types['receiver:sweep'] || 0) >= 2`, 15_000);
 		check('receiver:sweep datang', sweep, `${await page.evaluate(`window.__kit.types['receiver:sweep'] || 0`)} frame`);
 		check('hasil scan berlabel SIMULASI', /SIMULASI/.test(await page.evaluate(`document.getElementById('listenerSweepInfo').textContent`)));
-		await expectResult(page, 'start saat scan dijawab SWEEP_BUSY', 'host:start', click('listenerStartBtn'), 10_000, 'SWEEP_BUSY');
+		await expectResult(page, 'start saat scan dijawab SWEEP_BUSY', 'host:start', click('spectrumToggleBtn'), 10_000, 'SWEEP_BUSY');
 		await expectResult(page, 'sweepStop {resumeRx: true}', 'host:sweep-stop', click('listenerSweepStopBtn'), 20_000);
-		await page.waitFor(`document.getElementById('listenerStatusPill').textContent.startsWith('RX')`, 10_000);
+		await page.waitFor(`document.querySelector('#listenerStatus dd:nth-of-type(2)')?.textContent === 'Berjalan'`, 10_000);
+		await page.evaluate(click('radioTabListener'));
+		check('kembali ke tab Listener: panel radio tampil lagi', await page.evaluate(`!document.getElementById('listenerFrameWrap').hidden`));
 
 		// Rekam & Translate dari Radio V2 (browser): audio kit -> POST /webusb/audio -> /record-radio.
 		const audioBefore = await page.evaluate(`window.__kit.types['receiver:audio'] || 0`);
@@ -212,6 +224,11 @@ async function main() {
 		await realClick(page, 'playRadioBtn');
 		const transcript = await page.waitFor(`/\\[TANPA MODEL\\] Audio [0-9.]+ dtk/.test(document.getElementById('whisperOutput').value)`, 20_000);
 		check('rekaman Radio V2 sampai Whisper (mode tanpa model)', transcript, await page.evaluate(`document.getElementById('whisperOutput').value`));
+		// Database Rekaman: rekaman tadi tersimpan dengan info radio dan teksnya.
+		const record = await page.evaluate(`fetch('/records?limit=1').then(r => r.json()).then(d => d.items[0] || null)`);
+		check('rekaman tersimpan di database Rekaman (sumber, frekuensi, teks)',
+			record && record.kind === 'terjemah' && /Radio V2 · USB di browser/.test(record.source) && record.freq_hz > 0 && record.has_audio && /TANPA MODEL/.test(record.text_papua),
+			record ? `#${record.id} ${record.source} ${record.freq_hz} Hz` : 'tidak ada');
 		await sleep(1500);
 		const audioAfterStop = await page.evaluate(`window.__kit.types['receiver:audio'] || 0`);
 		await sleep(1500);
@@ -222,7 +239,7 @@ async function main() {
 		check('subscribe audio (buka saat rekam, tutup sesudahnya)', subs.length >= 2 && subs.every((c) => c === 'OK'), subs.join(', '));
 		await page.evaluate(click('navSetRadioBtn'));
 
-		await expectResult(page, 'stop', 'host:stop', click('listenerStopBtn'));
+		await expectResult(page, 'stop', 'host:stop', click('spectrumToggleBtn'));
 
 		// Peringatan yang diharapkan: start yang sengaja dikirim saat scan, dan
 		// squelch Mock SDR yang mati waktu merekam.
