@@ -1,0 +1,29 @@
+# Lingkungan Python & cache
+.venv/
+__pycache__/
+*.pyc
+
+# Data lokal (dibuat saat aplikasi jalan)
+logs/
+rekaman_radio/
+radio-translate.env
+
+# Model AI: besar, tetap di Google Drive. Taruh di folder ini atau di models/.
+models/
+whisper-*/
+best_bleu_*/
+virtual_env_papua/
+
+# Hasil build installer
+build/
+dist/
+
+# Salinan zip dari Drive (isinya sama dengan static/ & templates/)
+*.zip
+
+# Alat lokal
+node_modules/
+.claude/
+.run/
+.DS_Store
+Thumbs.db

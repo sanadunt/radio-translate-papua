@@ -1,0 +1,49 @@
+[project]
+name = "radio-translate-papua"
+version = "1.0.0"
+description = "Penerjemah Bahasa Papua -> Indonesia dari radio (Radio V1 Web-888, Radio V2 USB)"
+requires-python = ">=3.12,<3.14"
+license = { text = "Proprietary; listener_kit/ AGPL-3.0-only" }
+dependencies = [
+    "flask>=3.1",
+    "waitress>=3.0",
+    "numpy>=2.0",
+    "scipy>=1.13",
+    "sounddevice>=0.5",
+    "soundfile>=0.13",
+    "gtts>=2.5",
+    "pydub>=0.25",
+    "audioop-lts>=0.2; python_version >= '3.13'",
+    "noisereduce>=3.0",
+    "websocket-client>=1.8",
+    "requests>=2.32",
+    "tqdm>=4.66",
+]
+
+[project.optional-dependencies]
+# Model AI (Whisper + terjemahan). Besar (torch); tanpa ini aplikasi jalan
+# dalam MODE TANPA MODEL. Di Windows/Linux torch diambil versi CUDA 12.8.
+ai = [
+    "torch>=2.6",
+    "faster-whisper>=1.1",
+    "ctranslate2>=4.5",
+    "transformers>=4.46",
+    "peft>=0.13",
+    "sentencepiece>=0.2",
+    "accelerate>=1.0",
+]
+
+[dependency-groups]
+build = ["pyinstaller>=6.11"]
+
+[tool.uv]
+# Bukan library: cukup lingkungan untuk menjalankan radio_launcher.py.
+package = false
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128", marker = "sys_platform == 'win32' or sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

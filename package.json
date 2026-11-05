@@ -1,0 +1,10 @@
+{
+  "name": "radio-translate-papua",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "test:py": "uv run --locked python -m unittest discover -s tests -p \"test_*.py\"",
+    "test:e2e": "node tests/listener_e2e.mjs"
+  }
+}
