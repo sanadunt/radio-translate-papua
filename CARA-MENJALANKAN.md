@@ -19,6 +19,22 @@ konsol / Ctrl+C).
 Radio V2 · USB di browser butuh **Chrome atau Edge** (WebUSB). Browser lain tetap
 bisa memakai Radio V1 dan Auto Translate.
 
+## Auto Translate: Live dan Manual
+
+**Live** (bawaan): sambungkan radio di **Set Radio**, buka **Auto Translate**, lalu
+tekan **Mulai Live**. Radio didengar terus; setiap kali PTT dilepas, ucapan itu
+langsung ditranskrip dan diterjemahkan, lalu muncul sebagai kartu (terbaru di atas)
+dengan jam, frekuensi, teks Papua dan terjemahan Indonesia. Centang **Bacakan
+terjemahan otomatis** untuk TTS. Semua ucapan juga tersimpan di halaman **Rekaman**.
+Selama Live berjalan, Rekam & Translate manual tidak bisa dipakai (radionya sama).
+
+**Manual (cara lama)**: tab kedua di Auto Translate. Isinya sama seperti dulu:
+rekam satu sesi, unggah WAV/MP3, atau ketik teks Papua.
+
+Dengan GPU NVIDIA 6 GB ke atas (mis. RTX 3070), Whisper dan model terjemahan dimuat
+sekali saat aplikasi dibuka dan tetap di GPU, jadi hasil muncul sekitar satu detik
+setelah PTT dilepas. Pengaturannya ada di `radio-translate.env` (`YALI_LOW_VRAM_MODE`).
+
 ## Model AI (wizard)
 
 Saat pertama dibuka, aplikasi menampilkan wizard **Model AI** (bisa dibuka lagi

@@ -61,12 +61,12 @@
       <!-- Isi VIDEO_SRC di script.js (konstanta INTRO_VIDEO_URL) dengan path video Anda,
            misalnya '/static/intro.mp4'. Selama kosong, tombol play akan menampilkan
            pesan yang jelas alih-alih mencoba memuat file yang tidak ada (mencegah 404). -->
-      <video id="myCustomVideo" controls preload="none" style="width: 100%; height: 100%; object-fit: cover; display: none;">
+      <video id="myCustomVideo" controls preload="none" poster="{{ url_for('static', filename='papua-poster.jpg') }}" style="width: 100%; height: 100%; object-fit: contain; display: none;">
         Browser Anda tidak mendukung tag video.
       </video>
 
       <!-- Tombol & Ikon Play bawaan (akan disembunyikan otomatis jika video diputar) -->
-      <button class="video-play-trigger" id="videoPlayBtn" type="button" aria-label="Putar video pengantar" style="position: absolute; inset: 0; background: transparent; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 2;">
+      <button class="video-play-trigger" id="videoPlayBtn" type="button" aria-label="Putar video penjelasan cara kerja" style="position: absolute; inset: 0; background: transparent; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; z-index: 2;">
         <span class="video-glow" aria-hidden="true"></span>
         <span class="play-icon">
           <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 5v14l12-7L7 5z" fill="currentColor"/></svg>
@@ -74,7 +74,7 @@
       </button>
     </div>
     
-    <p class="video-caption" id="videoCaption">Video pengantar Papua</p>
+    <p class="video-caption" id="videoCaption">Cara kerja Radio Translate Papua: dari suara radio ke Bahasa Indonesia (1:30)</p>
   </div>
   
 <div class="about-container">
@@ -453,6 +453,69 @@
 <!-- ============================================================ -->
 <section class="page page-translate" id="pageTranslate" role="tabpanel" hidden>
 
+  <!-- Dua cara menerjemahkan: Live (radio didengar terus, tiap PTT langsung
+       diterjemahkan -- /live/*) dan Manual (cara lama: rekam sesi, unggah, ketik). -->
+  <div class="translate-modebar">
+    <div class="radio-tabs" role="tablist" aria-label="Cara menerjemahkan">
+      <button type="button" class="radio-tab active" id="translateModeLive" role="tab" aria-selected="true" data-translate-mode="live">Live</button>
+      <button type="button" class="radio-tab" id="translateModeManual" role="tab" aria-selected="false" data-translate-mode="manual">Manual (cara lama)</button>
+    </div>
+    <span class="translate-modebar-hint" id="translateModeHint">Radio didengar terus; setiap kali PTT dilepas, ucapan langsung diterjemahkan.</span>
+  </div>
+
+  <div class="live-view" id="translateLive">
+    <div class="panel live-bar">
+      <div class="live-field live-field-source">
+        <label class="manual-label" for="liveDeviceSelect">Sumber radio</label>
+        <select id="liveDeviceSelect" class="device-select">
+          <option>Mencari perangkat audio…</option>
+        </select>
+      </div>
+      <div class="live-field">
+        <label class="manual-label" for="liveLangSelect">Bahasa Papua</label>
+        <select id="liveLangSelect" class="device-select">
+          <option value="ambai" selected>Ambai</option>
+          <option value="biak">Biak</option>
+        </select>
+      </div>
+      <button type="button" class="btn btn-primary live-toggle-btn" id="liveToggleBtn">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M7 5v14l12-7L7 5z" fill="currentColor"/></svg>
+        Mulai Live
+      </button>
+      <div class="live-state">
+        <div class="live-state-row">
+          <span class="live-dot" id="liveDot" aria-hidden="true"></span>
+          <span class="live-state-text" id="liveStateText">Belum berjalan</span>
+        </div>
+        <div class="meter-track" title="Level sinyal radio">
+          <div class="meter-fill" id="liveMeterFill"></div>
+        </div>
+      </div>
+      <label class="checkbox-row live-tts">
+        <input type="checkbox" id="liveAutoTts">
+        <span>Bacakan terjemahan otomatis</span>
+      </label>
+    </div>
+
+    <div class="panel live-feed-panel">
+      <div class="live-feed-head">
+        <h2 class="panel-title">Hasil Live</h2>
+        <span class="live-stats" id="liveStats"></span>
+        <span class="status-pill live-model-pill" id="liveModelPill">Model: memeriksa…</span>
+        <button type="button" class="btn btn-ghost btn-sm" id="liveClearBtn">Bersihkan layar</button>
+      </div>
+      <div class="live-feed" id="liveFeed" aria-live="polite">
+        <div class="live-empty" id="liveEmpty">
+          <p class="live-empty-title">Belum ada ucapan</p>
+          <p>Sambungkan radio di <b>Set Radio</b>, pilih sumbernya di atas, lalu tekan <b>Mulai Live</b>.
+          Setiap kali PTT dilepas, teks Papua dan terjemahan Indonesianya muncul di sini.
+          Semua ucapan juga tersimpan di halaman <b>Rekaman</b>.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="translate-manual" id="translateManual" hidden>
   <div class="console">
 
     <section class="col col-left">
@@ -564,6 +627,7 @@
     </div>
     <div class="log-box" id="logBox" role="log" aria-live="polite"></div>
   </div>
+  </div><!-- /#translateManual -->
 
 </section>
 

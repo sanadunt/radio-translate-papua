@@ -17,6 +17,7 @@ Cara menjalankan (klik dua kali, tanpa memasang Python): lihat **[CARA-MENJALANK
 | `web888_client.py` | Radio V1: Web-888 lewat WebSocket |
 | `hackrf_client.py` | Radio V2 lewat server (`hackrf_transfer`) dan simulasinya |
 | `webusb_audio_bridge.py` | Audio Radio V2 dari browser untuk Rekam & Translate |
+| `live_translator.py` | Mode Live: dengar terus, tiap PTT langsung ditranskrip & diterjemahkan |
 | `templates/`, `static/` | Frontend |
 | `listener_kit/` | Build Listener Kit (AGPL-3.0, lihat `listener_kit/SOURCE.md`) |
 | `updater.py`, `rilis.sh` | Update otomatis dari GitHub Releases (lihat RILIS.md) |

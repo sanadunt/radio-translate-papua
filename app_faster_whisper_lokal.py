@@ -9,7 +9,12 @@ import os, sys, subprocess, venv, pathlib, gc
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 # Mode hemat VRAM untuk GPU kecil (4 GB): hanya 1 model besar aktif di GPU dalam satu waktu
-LOW_VRAM_MODE = os.environ.get("YALI_LOW_VRAM_MODE", "1") == "1"
+# (Whisper & terjemahan bergantian dimuat dari disk). "auto" (default) = aktif hanya bila
+# VRAM GPU < YALI_LOW_VRAM_THRESHOLD_GB; GPU 8 GB (mis. RTX 3070) menyimpan keduanya.
+LOW_VRAM_SETTING = os.environ.get("YALI_LOW_VRAM_MODE", "auto").strip().lower()
+LOW_VRAM_THRESHOLD_GB = float(os.environ.get("YALI_LOW_VRAM_THRESHOLD_GB", "6"))
+# Model dimuat & dipanaskan di background saat aplikasi dibuka (bukan saat ucapan pertama).
+PRELOAD_MODELS = os.environ.get("YALI_PRELOAD_MODELS", "1") != "0"
 USE_FP16_CUDA = os.environ.get("YALI_USE_FP16_CUDA", "1") == "1"
 
 
@@ -217,7 +222,7 @@ import time
 import traceback
 from collections import deque
 from pathlib import Path
-from typing import Optional, List, Tuple
+from typing import Callable, Optional, List, Tuple
 
 import numpy as np
 import sounddevice as sd
@@ -241,6 +246,7 @@ from pydub.silence import split_on_silence
 from web888_client import Web888Client, KIWI_AUDIO_RATE
 from hackrf_client import HackRFClient, HACKRF_AUDIO_RATE
 from webusb_audio_bridge import WebUSBAudioBridge
+from live_translator import LiveSession
 from records_db import NOTE_MAX_CHARS, RecordsDB
 
 TARGET_SR = 16000
@@ -792,14 +798,32 @@ def cuda_model_dtype():
 def faster_whisper_device_compute():
     """
     Device dan compute_type untuk faster-whisper.
-    Untuk GPU kecil 4 GB, int8_float16 biasanya lebih hemat VRAM.
+    int8_float16: bobot int8 (hemat VRAM) dengan hitungan fp16 -- lebih cepat
+    dari int8 murni di GPU RTX. Bisa diganti lewat YALI_WHISPER_COMPUTE.
     """
     torch = torch_env.ensure_torch()
 
     if torch.cuda.is_available():
-        return "cuda", "int8"
+        return "cuda", os.environ.get("YALI_WHISPER_COMPUTE", "int8_float16")
 
     return "cpu", "int8"
+
+
+_gpu_vram_gb: Optional[float] = None
+
+
+def gpu_total_vram_gb() -> float:
+    """Total VRAM GPU CUDA pertama dalam GB (0 bila tidak ada CUDA)."""
+    global _gpu_vram_gb
+    if _gpu_vram_gb is None:
+        _gpu_vram_gb = 0.0
+        try:
+            torch = torch_env.ensure_torch()
+            if torch.cuda.is_available():
+                _gpu_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+        except Exception:
+            pass
+    return _gpu_vram_gb
 
 
 def should_swap_models_for_vram() -> bool:
@@ -808,9 +832,15 @@ def should_swap_models_for_vram() -> bool:
     kita jalan di GPU kecil yang VRAM-nya terbatas. Kalau device-nya CPU,
     tidak ada VRAM yang perlu dihemat -- swap di CPU cuma buang-buang waktu
     reload model dari disk setiap gantian Whisper/Translate, tanpa manfaat
-    apa pun. Jadi LOW_VRAM_MODE hanya berlaku efektif saat CUDA aktif.
+    apa pun. Jadi mode hemat VRAM hanya berlaku efektif saat CUDA aktif.
     """
-    return LOW_VRAM_MODE and is_cuda_device()
+    if not is_cuda_device():
+        return False
+    if LOW_VRAM_SETTING in ("1", "true", "on"):
+        return True
+    if LOW_VRAM_SETTING in ("0", "false", "off"):
+        return False
+    return gpu_total_vram_gb() < LOW_VRAM_THRESHOLD_GB
 
 
 
@@ -906,6 +936,10 @@ class PipelineService:
         # supaya scanner bisa tahu "ada sinyal atau tidak" tanpa perlu field
         # baru apapun di UI.
         self.last_device_index = None
+
+        # Status model untuk UI (Mode Live): off (tanpa model) / idle / loading / ready / error.
+        self.models_state = "off" if NO_MODEL_MODE else "idle"
+        self.models_error: Optional[str] = None
 
     # ---------- LOW VRAM HELPERS ----------
     def _unload_whisper_models(self):
@@ -1031,6 +1065,8 @@ class PipelineService:
             self._tok_yali_id = None
             self._mdl_yali_id = None
             self._mt_forced_bos_token_id = None
+            if not NO_MODEL_MODE:
+                self.models_state = "idle"
             clear_torch_memory()
 
         print(
@@ -1038,6 +1074,8 @@ class PipelineService:
             f"Whisper: {whisper_dir} | MT/best_bleu: {mt_dir}",
             file=sys.stderr,
         )
+        # Model bahasa baru langsung dimuat di background, bukan saat ucapan berikutnya.
+        self.warm_up_async()
         return {"ok": True, "lang": lang, "changed": True}
 
     # ---------- AUDIO RADIO (VOX RMS) ----------
@@ -1049,6 +1087,8 @@ class PipelineService:
         sample_rate: int = RADIO_SAMPLE_RATE,
         max_sec: float = LISTEN_MAX_SECONDS,
         record_max_sec: float = RECORD_MAX_SECONDS,
+        on_segment: Optional[Callable[[np.ndarray, int], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Tuple[List[np.ndarray], int]:
         """
         VOX/PTT dari input audio lokal (SDR++/VB-Cable/USB).
@@ -1074,6 +1114,11 @@ class PipelineService:
         "aku" [lepas] PTT "kamu" [lepas] [stop manual] akan menjadi teks
         "Aku. Kamu." yang jelas batas kalimatnya, bukan "aku kamu" yang
         ambigu bagi Whisper/terjemahan.
+
+        Mode Live: bila on_segment diberikan, tiap ucapan langsung diserahkan ke
+        on_segment(segmen, sr) begitu PTT dilepas (tidak dikumpulkan), dan sesi
+        berhenti lewat cancel_event milik pemanggil. on_segment dipanggil dari
+        thread audio, jadi harus cepat (cukup memasukkan ke antrian).
         """
         self.current_threshold = float(threshold)
         self.current_phase = "listening"
@@ -1092,9 +1137,20 @@ class PipelineService:
         release_frames_needed = max(blocksize, int(VOX_RELEASE_SECONDS * sr))
         pre_roll_blocks = max(1, int(np.ceil(VOX_PRE_ROLL_SECONDS * sr / blocksize)))
 
+        cancel = cancel_event or self.cancel_event
         is_recording = False
         current_blocks: List[np.ndarray] = []
         segments: List[np.ndarray] = []
+        segment_count = 0
+
+        def emit(segment: np.ndarray):
+            nonlocal segment_count
+            segment_count += 1
+            if on_segment is None:
+                segments.append(segment)
+            else:
+                on_segment(segment, sr)
+
         pre_roll = deque(maxlen=pre_roll_blocks)
         listen_frames = 0
         record_frames = 0
@@ -1114,9 +1170,9 @@ class PipelineService:
             berakhir di sini."""
             nonlocal current_blocks, is_recording, listen_frames, above_frames, below_frames
             if current_blocks:
-                segments.append(np.concatenate(current_blocks).astype(np.float32, copy=False))
-                seg_dur = segments[-1].size / sr
-                print(f"[SEGMENT] Ucapan #{len(segments)} selesai ({seg_dur:.2f} dtk) -- {reason}.", file=sys.stderr)
+                segment = np.concatenate(current_blocks).astype(np.float32, copy=False)
+                emit(segment)
+                print(f"[SEGMENT] Ucapan #{segment_count} selesai ({segment.size / sr:.2f} dtk) -- {reason}.", file=sys.stderr)
             current_blocks = []
             is_recording = False
             listen_frames = 0
@@ -1124,7 +1180,7 @@ class PipelineService:
             below_frames = 0
             pre_roll.clear()
             self.current_phase = "listening"
-            self.current_label = f"Ucapan #{len(segments)} tersimpan, menunggu PTT berikutnya…"
+            self.current_label = f"Ucapan #{segment_count} tersimpan, menunggu PTT berikutnya…"
 
         def callback(indata, frames, time_info, status):
             nonlocal is_recording, current_blocks, listen_frames, record_frames
@@ -1135,7 +1191,7 @@ class PipelineService:
                 print(f"[PortAudio status] {status}", file=sys.stderr)
             if frames <= 0:
                 return
-            if self.cancel_event.is_set():
+            if cancel.is_set():
                 should_stop = True
                 return
 
@@ -1165,7 +1221,7 @@ class PipelineService:
                 if above_frames >= trigger_frames_needed:
                     is_recording = True
                     self.current_phase = "recording"
-                    seg_no = len(segments) + 1
+                    seg_no = segment_count + 1
                     self.current_label = f"Merekam ucapan #{seg_no} (berhenti manual di web)…"
                     current_blocks = list(pre_roll)
                     record_frames = sum(x.size for x in current_blocks)
@@ -1205,8 +1261,8 @@ class PipelineService:
         # dilepas lagi), tetap simpan ucapan terakhir yang sedang berjalan
         # sebagai segmen -- jangan sampai ucapan terakhir hilang begitu saja.
         if is_recording and current_blocks:
-            segments.append(np.concatenate(current_blocks).astype(np.float32, copy=False))
-            print(f"[SEGMENT] Ucapan #{len(segments)} ditutup paksa (stop manual/timeout).", file=sys.stderr)
+            emit(np.concatenate(current_blocks).astype(np.float32, copy=False))
+            print(f"[SEGMENT] Ucapan #{segment_count} ditutup paksa (stop manual/timeout).", file=sys.stderr)
 
         if not segments:
             self.current_phase = "idle"
@@ -1227,6 +1283,8 @@ class PipelineService:
         threshold: float = RMS_THRESHOLD,
         max_sec: float = LISTEN_MAX_SECONDS,
         record_max_sec: float = RECORD_MAX_SECONDS,
+        on_segment: Optional[Callable[[np.ndarray, int], None]] = None,
+        cancel_event: Optional[threading.Event] = None,
     ) -> Tuple[List[np.ndarray], int]:
         """
         VOX/PTT langsung dari Web-888. Buffer rekam terpisah dari monitor
@@ -1249,16 +1307,29 @@ class PipelineService:
         men-transkrip Whisper PER SEGMEN lalu menggabung hasilnya dengan
         tanda titik di antaranya -- misal PTT "aku" [lepas] PTT "kamu"
         [lepas] [stop manual] akan menjadi "Aku. Kamu.", bukan "aku kamu".
+
+        on_segment / cancel_event: lihat record_radio_rms() (Mode Live).
         """
         self.current_threshold = float(threshold)
         self.current_phase = "listening"
-        self.current_label = "Mendengarkan sinyal radio via Web-888…"
+        self.current_label = "Mendengarkan sinyal radio…"
         client.clear_audio()
 
         sr = int(client.get_audio_sample_rate() or KIWI_AUDIO_RATE)
+        cancel = cancel_event or self.cancel_event
         is_recording = False
         current_chunks: List[np.ndarray] = []
         segments: List[np.ndarray] = []
+        segment_count = 0
+
+        def emit(segment: np.ndarray):
+            nonlocal segment_count
+            segment_count += 1
+            if on_segment is None:
+                segments.append(segment)
+            else:
+                on_segment(segment, sr)
+
         listen_started = time.monotonic()
         record_started = 0.0
         last_audio_at = 0.0
@@ -1269,19 +1340,19 @@ class PipelineService:
             menunggu ucapan berikutnya -- sesi TIDAK berakhir di sini."""
             nonlocal current_chunks, is_recording, listen_started, release_started
             if current_chunks:
-                segments.append(np.concatenate(current_chunks).astype(np.float32, copy=False))
-                seg_dur = segments[-1].size / sr
-                print(f"[WEB888] [SEGMENT] Ucapan #{len(segments)} selesai ({seg_dur:.2f} dtk) -- {reason}.", file=sys.stderr)
+                segment = np.concatenate(current_chunks).astype(np.float32, copy=False)
+                emit(segment)
+                print(f"[WEB888] [SEGMENT] Ucapan #{segment_count} selesai ({segment.size / sr:.2f} dtk) -- {reason}.", file=sys.stderr)
             current_chunks = []
             is_recording = False
             listen_started = time.monotonic()
             release_started = None
             self.current_phase = "listening"
-            self.current_label = f"Ucapan #{len(segments)} tersimpan, menunggu PTT berikutnya…"
+            self.current_label = f"Ucapan #{segment_count} tersimpan, menunggu PTT berikutnya…"
 
         while True:
             now = time.monotonic()
-            if self.cancel_event.is_set():
+            if cancel.is_set():
                 print("[WEB888] Dihentikan manual.", file=sys.stderr)
                 break
             if not client.connected_snd:
@@ -1306,8 +1377,8 @@ class PipelineService:
                         is_recording = True
                         record_started = now
                         self.current_phase = "recording"
-                        seg_no = len(segments) + 1
-                        self.current_label = f"Merekam ucapan #{seg_no} (Web-888, berhenti manual di web)…"
+                        seg_no = segment_count + 1
+                        self.current_label = f"Merekam ucapan #{seg_no}…"
                         current_chunks.append(chunk)
                         release_started = None
                         print(f"[WEB888] [START] Rekam ucapan #{seg_no} (RMS={rms:.8e})", file=sys.stderr)
@@ -1339,8 +1410,8 @@ class PipelineService:
         # Kalau berhenti manual/timeout SAAT MASIH merekam (PTT belum sempat
         # dilepas lagi), tetap simpan ucapan terakhir yang sedang berjalan.
         if is_recording and current_chunks:
-            segments.append(np.concatenate(current_chunks).astype(np.float32, copy=False))
-            print(f"[WEB888] [SEGMENT] Ucapan #{len(segments)} ditutup paksa (stop manual/timeout).", file=sys.stderr)
+            emit(np.concatenate(current_chunks).astype(np.float32, copy=False))
+            print(f"[WEB888] [SEGMENT] Ucapan #{segment_count} ditutup paksa (stop manual/timeout).", file=sys.stderr)
 
         if not segments:
             self.current_phase = "idle"
@@ -1370,11 +1441,14 @@ class PipelineService:
                 file=sys.stderr
             )
 
-            self._whisper_model_radio = WhisperModel(
-                self.model_dir_radio,
-                device=device,
-                compute_type=compute_type,
-            )
+            if self._whisper_model_upload is not None and self.model_dir_upload == self.model_dir_radio:
+                self._whisper_model_radio = self._whisper_model_upload
+            else:
+                self._whisper_model_radio = WhisperModel(
+                    self.model_dir_radio,
+                    device=device,
+                    compute_type=compute_type,
+                )
 
             clear_torch_memory()
 
@@ -1394,11 +1468,14 @@ class PipelineService:
                 file=sys.stderr
             )
 
-            self._whisper_model_upload = WhisperModel(
-                self.model_dir_upload,
-                device=device,
-                compute_type=compute_type,
-            )
+            if self._whisper_model_radio is not None and self.model_dir_upload == self.model_dir_radio:
+                self._whisper_model_upload = self._whisper_model_radio
+            else:
+                self._whisper_model_upload = WhisperModel(
+                    self.model_dir_upload,
+                    device=device,
+                    compute_type=compute_type,
+                )
 
             clear_torch_memory()
 
@@ -1659,6 +1736,48 @@ class PipelineService:
             if original.endswith(".") and not out.endswith("."):
                 out += "."
             return out
+
+    # ---------- PRELOAD / PEMANASAN MODEL ----------
+    def warm_up(self):
+        """Muat Whisper (dan model terjemahan bila VRAM cukup untuk keduanya), lalu
+        jalankan satu inferensi kecil supaya ucapan pertama tidak menunggu model
+        dimuat dari disk dan kernel CUDA disiapkan."""
+        if NO_MODEL_MODE:
+            return
+        started = time.monotonic()
+        self.models_state = "loading"
+        try:
+            with self.model_lock:
+                lang = self.current_lang
+                self._ensure_whisper_radio()
+                segments, _ = self._whisper_model_radio.transcribe(
+                    np.zeros(TARGET_SR, dtype=np.float32),
+                    language="id",
+                    beam_size=1,
+                    vad_filter=False,
+                    condition_on_previous_text=False,
+                )
+                list(segments)
+                if not should_swap_models_for_vram():
+                    self._ensure_yali_id()
+                    self._yali_to_id_single("halo")
+            self.models_state = "ready"
+            self.models_error = None
+            print(
+                f"[INIT] Model '{lang}' siap dalam {time.monotonic() - started:.1f} dtk "
+                f"(device={torch_env.device}, VRAM={gpu_total_vram_gb():.1f} GB, "
+                f"model bergantian={'ya' if should_swap_models_for_vram() else 'tidak'}).",
+                file=sys.stderr,
+            )
+        except Exception as exc:
+            self.models_state = "error"
+            self.models_error = str(exc)
+            print(f"[INIT ERROR] Gagal memuat model: {exc}", file=sys.stderr)
+
+    def warm_up_async(self):
+        if NO_MODEL_MODE or not PRELOAD_MODELS:
+            return
+        threading.Thread(target=self.warm_up, name="model-warmup", daemon=True).start()
 
 
 # global service
@@ -3020,6 +3139,151 @@ def stop_record_radio():
 
 
 # ==========================================================
+# MODE LIVE (live_translator.py): dengar terus, terjemahkan per PTT
+# ==========================================================
+# Sesi Live memegang pipeline.record_lock selama berjalan, jadi "Rekam &
+# Translate" manual tidak bisa berebut radio dengannya. Tiap ucapan disimpan
+# ke database Rekaman seperti rekaman manual (jenis "terjemah", 1 ucapan).
+live = LiveSession()
+LIVE_LISTEN_SECONDS = 10 ** 8  # praktis tanpa batas; berhenti lewat /live/stop
+# Potongan lebih pendek dari ini (mis. sisa PTT saat Live baru dimulai, klik squelch)
+# tidak dikirim ke Whisper: terlalu pendek untuk kata dan mudah jadi teks halusinasi.
+LIVE_MIN_SECONDS = float(os.environ.get("YALI_LIVE_MIN_SECONDS", "0.6"))
+
+
+def _live_process(radio_name, radio, dev_index):
+    def process(segment, sr, context):
+        segment = np.asarray(segment, dtype=np.float32).reshape(-1)
+        if segment.size < LIVE_MIN_SECONDS * sr:
+            return None
+        seg_clean = prepare_radio_segment(segment, int(sr))
+        if seg_clean is None:
+            return None
+        text_papua = remove_quotes(pipeline.whisper_transcribe_radio(whisper_input_16k(seg_clean, int(sr))).strip())
+        text_indonesia = pipeline.yali_to_id_segments_bestbleu(text_papua) if text_papua else ""
+        duration = seg_clean.size / float(sr)
+
+        pipeline.last_audio_clean = seg_clean.copy()
+        pipeline.last_audio_sr = int(sr)
+        pipeline.last_audio_updated_at = time.time()
+
+        meta = recording_meta(context.get("meta"), radio_name, radio, dev_index)
+        saved_path = save_recording_wav(seg_clean, int(sr))
+        record_id = log_recording("terjemah", meta, saved_path, duration, sr, 1, text_papua, text_indonesia)
+        print(f"[LIVE] Ucapan {duration:.1f} dtk: {text_papua!r} -> {text_indonesia!r}", file=sys.stderr)
+        return {
+            "text_papua": text_papua,
+            "text_indonesia": text_indonesia,
+            "record_id": record_id,
+            "duration_sec": round(duration, 2),
+            "lang": pipeline.current_lang,
+            "source": meta.get("source"),
+            "freq_hz": meta.get("freq_hz"),
+            "mode": meta.get("mode"),
+        }
+    return process
+
+
+def _live_finished():
+    pipeline.current_phase = "idle"
+    pipeline.current_label = "Siap"
+    pipeline.current_rms = 0.0
+    pipeline.record_lock.release()
+    print("[LIVE] Sesi Live selesai.", file=sys.stderr)
+
+
+@app.route("/live/start", methods=["POST"])
+def live_start():
+    data = request.get_json(force=True, silent=True) or {}
+    if live.running:
+        return jsonify({"ok": True, "already": True, **live.snapshot(after=10 ** 12)})
+    if not pipeline.record_lock.acquire(blocking=False):
+        return jsonify({"ok": False, "busy": True,
+                        "error": "Radio sedang dipakai Rekam & Translate; hentikan dulu."}), 200
+    started = False
+    try:
+        lang_result = pipeline.set_language(data.get("lang", ""))
+        try:
+            thr = max(float(data.get("rms_threshold", RMS_THRESHOLD)), 1e-9)
+        except (TypeError, ValueError):
+            thr = RMS_THRESHOLD
+        try:
+            dev_index = int(data.get("device_index"))
+        except (TypeError, ValueError):
+            dev_index = None
+
+        radio_name, radio = resolve_radio_source(dev_index)
+        if radio is not None:
+            if not radio.connected_snd:
+                return jsonify({"ok": False, "error": (
+                    f"{radio_name} belum tersambung. Sambungkan dulu di Set Radio, "
+                    "lalu tunggu status audio siap.")}), 200
+
+            def capture(on_segment, cancel):
+                pipeline.record_radio_web888(radio, threshold=thr, max_sec=LIVE_LISTEN_SECONDS,
+                                             on_segment=on_segment, cancel_event=cancel)
+            source = radio_name
+        elif dev_index is not None:
+            pipeline.last_device_index = dev_index
+
+            def capture(on_segment, cancel):
+                pipeline.record_radio_rms(device_index=dev_index, threshold=thr, blocksize=RADIO_BLOCKSIZE,
+                                          sample_rate=RADIO_SAMPLE_RATE, max_sec=LIVE_LISTEN_SECONDS,
+                                          on_segment=on_segment, cancel_event=cancel)
+            try:
+                source = str(sd.query_devices(dev_index).get("name") or f"Perangkat {dev_index}")
+            except Exception:
+                source = f"Perangkat {dev_index}"
+        else:
+            return jsonify({"ok": False, "error": "Pilih sumber radio terlebih dahulu."}), 200
+
+        info = {"source": source, "device_index": dev_index, "lang": pipeline.current_lang,
+                "meta": data.get("meta") if isinstance(data.get("meta"), dict) else {}}
+        started = live.start(capture, _live_process(radio_name, radio, dev_index), info, on_finish=_live_finished)
+        if not started:
+            return jsonify({"ok": False, "busy": True, "error": "Sesi Live sebelumnya masih ditutup; coba lagi."}), 200
+        print(f"[LIVE] Mulai mendengarkan {source} (bahasa {pipeline.current_lang}).", file=sys.stderr)
+        return jsonify({"ok": True, "lang_warning": None if lang_result.get("ok") else lang_result.get("error"),
+                        **live.snapshot(after=10 ** 12)})
+    finally:
+        if not started:
+            pipeline.record_lock.release()
+
+
+@app.route("/live/stop", methods=["POST"])
+def live_stop():
+    live.stop()
+    return jsonify({"ok": True, **live.snapshot(after=10 ** 12)})
+
+
+@app.route("/live/meta", methods=["POST"])
+def live_meta():
+    data = request.get_json(force=True, silent=True) or {}
+    live.update_meta(data.get("meta"))
+    return jsonify({"ok": True})
+
+
+@app.route("/live/status", methods=["GET"])
+def live_status():
+    try:
+        after = int(request.args.get("after", "0"))
+    except ValueError:
+        after = 0
+    return jsonify({
+        "ok": True,
+        **live.snapshot(after=after),
+        "phase": str(pipeline.current_phase),
+        "rms": float(pipeline.current_rms or 0.0),
+        "models": {
+            "state": pipeline.models_state,
+            "error": pipeline.models_error,
+            "no_model": bool(NO_MODEL_MODE),
+            "device": str(torch_env.device) if torch_env.device is not None else None,
+        },
+    })
+
+
+# ==========================================================
 # DATABASE VFO RECORD (records_db.py)
 # ==========================================================
 # Setiap hasil "Rekam & Simpan" maupun "Rekam & Translate" disimpan sebagai WAV
@@ -3101,6 +3365,43 @@ def log_recording(kind, meta, saved_path, duration, sr, segments, text_papua="",
         return None
 
 
+def prepare_radio_segment(seg: np.ndarray, sr: int) -> Optional[np.ndarray]:
+    """Bersihkan satu ucapan radio untuk Whisper (reduksi noise, gain, normalisasi).
+    None bila kosong atau terlalu pelan setelah dibersihkan."""
+    seg_clean = clean_for_whisper(seg, int(sr))
+    if seg_clean.size == 0:
+        return None
+    if GAIN_LINEAR != 1.0:
+        seg_clean = seg_clean * GAIN_LINEAR
+    peak = float(np.max(np.abs(seg_clean))) if seg_clean.size else 0.0
+    if peak > 1.0:
+        seg_clean = seg_clean / peak * 0.99
+    seg_clean = np.nan_to_num(seg_clean, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
+    if float(np.sqrt(np.mean(seg_clean * seg_clean) + 1e-12)) < 1e-6:
+        return None
+    return seg_clean
+
+
+def whisper_input_16k(seg_clean: np.ndarray, sr: int) -> np.ndarray:
+    seg16 = resample_to_16k(seg_clean, int(sr)) if int(sr) != TARGET_SR else seg_clean
+    return np.clip(seg16, -1.0, 1.0).astype(np.float32)
+
+
+def resolve_radio_source(dev_index: Optional[int]):
+    """(nama, client) untuk radio virtual (Web-888 / HackRF / WebUSB), atau
+    (None, None) bila dev_index adalah perangkat audio lokal (sounddevice)."""
+    virtual_radios = {
+        WEB888_VIRTUAL_DEVICE_INDEX: ("Radio V1 · Web-888", web888),
+        HACKRF_VIRTUAL_DEVICE_INDEX: ("Radio V2 · USB lewat server", hackrf),
+        WEBUSB_VIRTUAL_DEVICE_INDEX: ("Radio V2 · USB di browser", webusb_audio),
+    }
+    if dev_index in virtual_radios:
+        return virtual_radios[dev_index]
+    if dev_index is None and direct_radio() is not None:
+        return active_spectrum_source(), direct_radio()
+    return None, None
+
+
 @app.route("/record-radio", methods=["POST"])
 def record_radio():
     """
@@ -3113,7 +3414,11 @@ def record_radio():
             {
                 "ok": False,
                 "busy": True,
-                "error": "Radio sedang dipakai oleh proses rekam/terjemahan sebelumnya.",
+                "error": (
+                    "Mode Live sedang berjalan; hentikan dulu di Auto Translate."
+                    if live.running
+                    else "Radio sedang dipakai oleh proses rekam/terjemahan sebelumnya."
+                ),
             }
         ), 200
 
@@ -3147,18 +3452,8 @@ def record_radio():
         except (TypeError, ValueError):
             dev_index = None
 
-        virtual_radios = {
-            WEB888_VIRTUAL_DEVICE_INDEX: ("Radio V1 · Web-888", web888),
-            HACKRF_VIRTUAL_DEVICE_INDEX: ("Radio V2 · USB lewat server", hackrf),
-            WEBUSB_VIRTUAL_DEVICE_INDEX: ("Radio V2 · USB di browser", webusb_audio),
-        }
-        if dev_index in virtual_radios:
-            radio_name, radio = virtual_radios[dev_index]
-        elif dev_index is None and direct_radio() is not None:
-            radio_name, radio = active_spectrum_source(), direct_radio()
-        else:
-            radio_name, radio = None, None
-        if dev_index is not None and dev_index not in virtual_radios:
+        radio_name, radio = resolve_radio_source(dev_index)
+        if dev_index is not None and radio is None:
             pipeline.last_device_index = dev_index
         meta = recording_meta(data.get("meta"), radio_name, radio, dev_index)
 
@@ -3302,32 +3597,14 @@ def record_radio():
         segment_texts: List[str] = []
         for idx, seg in enumerate(norm_segments, start=1):
             pipeline.current_label = f"Membersihkan ucapan #{idx}/{len(norm_segments)}…"
-            seg_clean = clean_for_whisper(seg, int(sr))
-            if seg_clean.size == 0:
-                print(f"[API] Ucapan #{idx} kosong setelah cleaning, dilewati.", file=sys.stderr)
-                continue
-
-            if GAIN_LINEAR != 1.0:
-                seg_clean = seg_clean * GAIN_LINEAR
-            peak = float(np.max(np.abs(seg_clean))) if seg_clean.size else 0.0
-            if peak > 1.0:
-                seg_clean = seg_clean / peak * 0.99
-            seg_clean = np.nan_to_num(
-                seg_clean, nan=0.0, posinf=0.0, neginf=0.0
-            ).astype(np.float32)
-
-            if float(np.sqrt(np.mean(seg_clean * seg_clean) + 1e-12)) < 1e-6:
-                print(f"[API] Ucapan #{idx} terlalu pelan setelah reduksi noise, dilewati.", file=sys.stderr)
+            seg_clean = prepare_radio_segment(seg, int(sr))
+            if seg_clean is None:
+                print(f"[API] Ucapan #{idx} kosong/terlalu pelan setelah cleaning, dilewati.", file=sys.stderr)
                 continue
 
             cleaned_segments.append(seg_clean)
 
-            seg16 = (
-                resample_to_16k(seg_clean, int(sr))
-                if int(sr) != TARGET_SR
-                else seg_clean
-            )
-            seg16 = np.clip(seg16, -1.0, 1.0).astype(np.float32)
+            seg16 = whisper_input_16k(seg_clean, int(sr))
             if seg16.size == 0:
                 print(f"[API] Ucapan #{idx} gagal di-resample, dilewati.", file=sys.stderr)
                 continue
@@ -3805,6 +4082,7 @@ def prepare_runtime():
             torch_env.ensure_torch()
             torch_env.ensure_transformers()
             print(f"[INIT] Device: {torch_env.device}", file=sys.stderr)
+            pipeline.warm_up_async()
         except Exception as e:
             print(f"[INIT ERROR] {e}", file=sys.stderr)
 

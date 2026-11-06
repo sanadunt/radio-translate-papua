@@ -59,6 +59,15 @@ CONFIG_TEMPLATE = """\
 # Folder model AI (default: folder "models" di folder data ini).
 # YALI_MODEL_DIR=
 
+# GPU: auto = Whisper & model terjemahan tetap di GPU bila VRAM >= 6 GB (mis. RTX 3070);
+# 1 = bergantian dimuat dari disk (GPU 4 GB); 0 = selalu keduanya di GPU.
+# YALI_LOW_VRAM_MODE=auto
+# YALI_WHISPER_COMPUTE=int8_float16
+# 0 = model baru dimuat saat ucapan pertama, bukan saat aplikasi dibuka.
+# YALI_PRELOAD_MODELS=1
+# Mode Live: potongan suara lebih pendek dari ini (detik) tidak diterjemahkan.
+# YALI_LIVE_MIN_SECONDS=0.6
+
 # Radio V1 (Web-888 / SDR++): offset konverter dan alamat rigctl / rtl_tcp.
 # WEB888_FREQ_OFFSET_HZ=-122880000
 # RIGCTL_HOST=192.168.0.148

@@ -809,6 +809,7 @@
       log(`Gagal memuat perangkat dari server: ${err.message}`, 'err');
     } finally {
       deviceSelect.disabled = false;
+      document.dispatchEvent(new Event('devices-loaded'));
     }
   }
 
@@ -1495,7 +1496,7 @@
     const webusb = source === 'webusb';
     const serverRadio = source === 'hackrf' || source === 'hackrf-sim';
     const spectrumTab = radioTab === 'spectrum';
-    document.querySelectorAll('.radio-tab').forEach((btn) => {
+    document.querySelectorAll('[data-radio-tab]').forEach((btn) => {
       const on = btn.dataset.radioTab === radioTab;
       btn.classList.toggle('active', on);
       btn.setAttribute('aria-selected', on ? 'true' : 'false');
@@ -1550,7 +1551,7 @@
     const label = radioSourceSelect.options[radioSourceSelect.selectedIndex].textContent;
     log(`Sumber radio dipilih: ${label}. Tekan "Sambungkan" untuk memakai sumber ini.`, 'info');
   });
-  document.querySelectorAll('.radio-tab').forEach((btn) => {
+  document.querySelectorAll('[data-radio-tab]').forEach((btn) => {
     btn.addEventListener('click', () => showRadioTab(btn.dataset.radioTab));
   });
   function showRadioTab(tab){
@@ -3285,6 +3286,313 @@
       introVideoEl.style.display = 'none';
     });
   }
+
+  /* ============================================================
+     MODE LIVE — POST /live/start, /live/stop, /live/meta; GET /live/status
+     Radio didengar terus; setiap ucapan (satu PTT) langsung ditranskrip &
+     diterjemahkan di backend, lalu muncul sebagai kartu di #liveFeed.
+     ============================================================ */
+  const translateLive = $('translateLive');
+  const translateManual = $('translateManual');
+  const translateModeHint = $('translateModeHint');
+  const liveDeviceSelect = $('liveDeviceSelect');
+  const liveLangSelect = $('liveLangSelect');
+  const liveToggleBtn = $('liveToggleBtn');
+  const liveDot = $('liveDot');
+  const liveStateText = $('liveStateText');
+  const liveMeterFill = $('liveMeterFill');
+  const liveAutoTts = $('liveAutoTts');
+  const liveStats = $('liveStats');
+  const liveModelPill = $('liveModelPill');
+  const liveFeed = $('liveFeed');
+  const liveEmpty = $('liveEmpty');
+  const TRANSLATE_MODE_KEY = 'translateMode';
+  const LIVE_TTS_KEY = 'liveAutoTts';
+  const LIVE_POLL_MS = 600;
+
+  let liveRunning = false;
+  let liveStopping = false;
+  let liveLastId = 0;
+  let livePollTimer = null;
+  let liveViaWebusb = false;
+  let liveMetaSent = '';
+  let liveTtsChain = Promise.resolve();
+
+  function showTranslateMode(mode){
+    const live = mode !== 'manual';
+    document.querySelectorAll('[data-translate-mode]').forEach((btn) => {
+      const on = (btn.dataset.translateMode === 'live') === live;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    translateLive.hidden = !live;
+    translateManual.hidden = live;
+    translateModeHint.textContent = live
+      ? 'Radio didengar terus; setiap kali PTT dilepas, ucapan langsung diterjemahkan.'
+      : 'Cara lama: rekam satu sesi, unggah berkas, atau ketik teks Papua.';
+    try{ localStorage.setItem(TRANSLATE_MODE_KEY, live ? 'live' : 'manual'); } catch(err){ /* abaikan */ }
+    fitTranslateLive();
+  }
+  document.querySelectorAll('[data-translate-mode]').forEach((btn) => {
+    btn.addEventListener('click', () => showTranslateMode(btn.dataset.translateMode));
+  });
+
+  // Tampilan Live pas satu layar; daftar hasil bergulir di dalam kotaknya.
+  function fitTranslateLive(){
+    if (pages.pageTranslate.hidden || translateLive.hidden) return;
+    fitHeightToWindow(translateLive);
+  }
+  window.addEventListener('resize', () => requestAnimationFrame(fitTranslateLive));
+  $('navTranslateBtn').addEventListener('click', () => requestAnimationFrame(fitTranslateLive));
+
+  // Sumber radio: daftar sama dengan Radio Input Device. Selama belum dipilih
+  // sendiri, otomatis mengikuti radio yang sedang tersambung di Set Radio.
+  let liveDeviceTouched = false;
+  function syncLiveDevices(){
+    if (liveRunning) return;
+    const keep = liveDeviceSelect.value;
+    liveDeviceSelect.innerHTML = deviceSelect.innerHTML;
+    const connected = vfoRecordDevice();
+    const options = Array.from(liveDeviceSelect.options).map((o) => o.value);
+    if (!liveDeviceTouched && connected !== null && options.includes(String(connected))) liveDeviceSelect.value = String(connected);
+    else if (keep && options.includes(keep)) liveDeviceSelect.value = keep;
+    else liveDeviceSelect.value = deviceSelect.value;
+  }
+  document.addEventListener('devices-loaded', syncLiveDevices);
+  $('navTranslateBtn').addEventListener('click', syncLiveDevices);
+  liveDeviceSelect.addEventListener('change', () => { liveDeviceTouched = true; });
+
+  // Bahasa Live = bahasa Auto Translate (satu pilihan, dua tempat).
+  liveLangSelect.value = papuaLangSelect.value;
+  liveLangSelect.addEventListener('change', () => {
+    papuaLangSelect.value = liveLangSelect.value;
+    papuaLangSelect.dispatchEvent(new Event('change'));
+  });
+  papuaLangSelect.addEventListener('change', () => { liveLangSelect.value = papuaLangSelect.value; });
+
+  try{ liveAutoTts.checked = localStorage.getItem(LIVE_TTS_KEY) === '1'; } catch(err){ /* abaikan */ }
+  liveAutoTts.addEventListener('change', () => {
+    try{ localStorage.setItem(LIVE_TTS_KEY, liveAutoTts.checked ? '1' : '0'); } catch(err){ /* abaikan */ }
+  });
+
+  // Terjemahan dibacakan bergantian: berikutnya menunggu yang sebelumnya selesai.
+  function liveSpeak(text){
+    liveTtsChain = liveTtsChain.then(() => new Promise((resolve) => {
+      const done = () => {
+        audioPlayer.removeEventListener('ended', done);
+        audioPlayer.removeEventListener('error', done);
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(done, 30000);
+      audioPlayer.addEventListener('ended', done);
+      audioPlayer.addEventListener('error', done);
+      playTtsText(text);
+    }));
+  }
+
+  function liveTime(seconds){
+    return new Date(seconds * 1000).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+  function liveNumber(value, digits = 1){
+    return Number(value).toLocaleString('id-ID', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+  }
+
+  function renderLiveItem(item){
+    const card = document.createElement('article');
+    card.className = 'live-card' + (item.error ? ' is-error' : '');
+    const head = document.createElement('div');
+    head.className = 'live-card-head';
+    const parts = [liveTime(item.at)];
+    if (item.freq_hz) parts.push(`${formatMHzShort(item.freq_hz)} MHz`);
+    if (item.mode) parts.push(item.mode);
+    if (item.duration_sec) parts.push(`${liveNumber(item.duration_sec)} dtk`);
+    if (item.latency_sec != null) parts.push(`selesai ${liveNumber(item.latency_sec)} dtk setelah PTT`);
+    const meta = document.createElement('span');
+    meta.className = 'live-card-meta';
+    meta.textContent = parts.join(' · ');
+    head.appendChild(meta);
+
+    if (!item.error){
+      const actions = document.createElement('span');
+      actions.className = 'live-card-actions';
+      if (item.record_id){
+        const playBtn = document.createElement('button');
+        playBtn.type = 'button';
+        playBtn.className = 'btn btn-ghost btn-sm';
+        playBtn.textContent = 'Putar suara';
+        playBtn.addEventListener('click', () => playAudioUrl(`${API_BASE}/records/${item.record_id}/audio`, 'Memutar ucapan radio…'));
+        actions.appendChild(playBtn);
+      }
+      if (item.text_indonesia){
+        const ttsBtn = document.createElement('button');
+        ttsBtn.type = 'button';
+        ttsBtn.className = 'btn btn-ghost btn-sm';
+        ttsBtn.textContent = 'Bacakan';
+        ttsBtn.addEventListener('click', () => playTtsText(item.text_indonesia));
+        actions.appendChild(ttsBtn);
+      }
+      head.appendChild(actions);
+    }
+    card.appendChild(head);
+
+    if (item.error){
+      const err = document.createElement('p');
+      err.className = 'live-card-error';
+      err.textContent = item.error;
+      card.appendChild(err);
+    } else {
+      const indo = document.createElement('p');
+      indo.className = 'live-card-id';
+      indo.textContent = item.text_indonesia || (item.text_papua ? '(terjemahan kosong)' : '(tidak ada ucapan yang dikenali)');
+      const papua = document.createElement('p');
+      papua.className = 'live-card-papua';
+      papua.textContent = item.text_papua || '';
+      card.append(indo, papua);
+    }
+    liveEmpty.hidden = true;
+    liveFeed.insertBefore(card, liveEmpty.nextSibling);  // terbaru paling atas
+    while (liveFeed.querySelectorAll('.live-card').length > 200) liveFeed.lastElementChild.remove();
+  }
+
+  function setLiveButton(){
+    liveToggleBtn.disabled = liveStopping;
+    liveToggleBtn.classList.toggle('is-running', liveRunning);
+    liveToggleBtn.innerHTML = liveRunning
+      ? `${pauseIcon()}${liveStopping ? 'Menghentikan…' : 'Hentikan Live'}`
+      : `${playIcon()}Mulai Live`;
+    liveDeviceSelect.disabled = liveRunning;
+  }
+
+  function renderLiveStatus(data){
+    const models = data.models || {};
+    const modelText = models.no_model ? 'Tanpa model AI (teks penanda)'
+      : models.state === 'ready' ? `Model siap · ${String(models.device || '').toUpperCase() || 'CPU'}`
+      : models.state === 'loading' ? 'Memuat model…'
+      : models.state === 'error' ? 'Model gagal dimuat'
+      : 'Model dimuat saat dibutuhkan';
+    liveModelPill.textContent = modelText;
+    liveModelPill.title = models.error || '';
+    liveModelPill.classList.toggle('busy', models.state === 'loading');
+
+    let state = 'idle';
+    let text = data.error ? `Berhenti: ${data.error}` : 'Belum berjalan';
+    if (data.running){
+      if (data.stopping){ state = 'busy'; text = `Menyelesaikan ${data.queue + (data.processing ? 1 : 0)} ucapan terakhir…`; }
+      else if (data.phase === 'recording'){ state = 'recording'; text = 'Merekam ucapan…'; }
+      else if (data.processing){ state = 'busy'; text = data.queue ? `Menerjemahkan (${data.queue} menunggu)…` : 'Menerjemahkan…'; }
+      else { state = 'listening'; text = 'Mendengarkan · menunggu PTT'; }
+    }
+    liveDot.dataset.state = state;
+    liveStateText.textContent = text;
+    const level = data.running ? clamp((Number(data.rms) / 1.2e-4) * 100, 0, 100) : 0;
+    liveMeterFill.style.width = Math.max(level, 2) + '%';
+
+    const st = data.stats || {};
+    liveStats.textContent = data.started_at
+      ? `${st.done || 0} diterjemahkan dari ${st.heard || 0} ucapan` +
+        (st.last_latency_sec != null ? ` · terakhir ${liveNumber(st.last_latency_sec)} dtk` : '')
+      : '';
+  }
+
+  async function pollLive(){
+    try{
+      const res = await fetch(`${API_BASE}/live/status?after=${liveLastId}`);
+      const data = await safeJson(res);
+      if (!data.ok) return;
+      for (const item of data.items){
+        liveLastId = Math.max(liveLastId, item.id);
+        renderLiveItem(item);
+        if (!item.error && item.record_id) recordsChanged();
+        if (!item.error && item.text_indonesia && liveAutoTts.checked) liveSpeak(item.text_indonesia);
+      }
+      const wasRunning = liveRunning;
+      liveRunning = !!data.running;
+      liveStopping = !!data.stopping;
+      renderLiveStatus(data);
+      setLiveButton();
+      if (liveRunning){
+        // Frekuensi/mode terbaru dari Set Radio untuk ucapan berikutnya.
+        const meta = JSON.stringify(recordMetaForDevice(liveDeviceSelect.value));
+        if (meta !== liveMetaSent){
+          liveMetaSent = meta;
+          fetch(`${API_BASE}/live/meta`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ meta: JSON.parse(meta) }),
+          }).catch(() => {});
+        }
+      }
+      if (wasRunning && !liveRunning){
+        if (liveViaWebusb){ stopWebusbForwarding(); liveViaWebusb = false; }
+        log(data.error ? `Live berhenti: ${data.error}` : 'Live dihentikan.', data.error ? 'err' : 'warn');
+      }
+    } catch(err){
+      /* backend sibuk/terputus: coba lagi di putaran berikutnya */
+    } finally {
+      clearTimeout(livePollTimer);
+      livePollTimer = setTimeout(pollLive, liveRunning ? LIVE_POLL_MS : 3000);
+    }
+  }
+
+  async function startLive(){
+    const deviceIndex = liveDeviceSelect.value;
+    if (deviceIndex === '' || isNaN(Number(deviceIndex))){
+      log('Pilih sumber radio untuk Mode Live.', 'err');
+      return;
+    }
+    liveToggleBtn.disabled = true;
+    // Radio V2 di browser: audio kit diteruskan ke backend selama Live berjalan.
+    liveViaWebusb = deviceIndex === WEBUSB_DEVICE_INDEX;
+    if (liveViaWebusb && !(await startWebusbForwarding())){
+      liveViaWebusb = false;
+      liveToggleBtn.disabled = false;
+      return;
+    }
+    const meta = recordMetaForDevice(deviceIndex);
+    liveMetaSent = JSON.stringify(meta);
+    try{
+      const res = await fetch(`${API_BASE}/live/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_index: Number(deviceIndex), lang: selectedPapuaLang, rms_threshold: 2.0e-5, meta }),
+      });
+      const data = await safeJson(res);
+      if (!data.ok){
+        log(`Live: ${data.error || 'gagal memulai.'}`, 'err');
+        liveStateText.textContent = data.error || 'Gagal memulai';
+        if (liveViaWebusb){ stopWebusbForwarding(); liveViaWebusb = false; }
+        return;
+      }
+      logLangWarningIfAny(data);
+      liveRunning = true;
+      liveStopping = false;
+      log(`Live dimulai: ${data.info?.source || 'radio'} (bahasa ${liveLangSelect.options[liveLangSelect.selectedIndex].textContent}).`, 'ok');
+    } catch(err){
+      log(`Gagal menghubungi backend untuk Live: ${err.message}`, 'err');
+      if (liveViaWebusb){ stopWebusbForwarding(); liveViaWebusb = false; }
+    } finally {
+      setLiveButton();
+      pollLive();
+    }
+  }
+
+  async function stopLive(){
+    liveStopping = true;
+    setLiveButton();
+    try{ await fetch(`${API_BASE}/live/stop`, { method: 'POST' }); }
+    catch(err){ log(`Gagal menghentikan Live: ${err.message}`, 'err'); }
+    pollLive();
+  }
+
+  liveToggleBtn.addEventListener('click', () => (liveRunning ? stopLive() : startLive()));
+  $('liveClearBtn').addEventListener('click', () => {
+    liveFeed.querySelectorAll('.live-card').forEach((card) => card.remove());
+    liveEmpty.hidden = false;
+  });
+
+  try{ showTranslateMode(localStorage.getItem(TRANSLATE_MODE_KEY) === 'manual' ? 'manual' : 'live'); }
+  catch(err){ showTranslateMode('live'); }
+  setLiveButton();
+  pollLive();  // juga menyambung lagi ke sesi Live yang masih berjalan setelah halaman dimuat ulang
 
   /* ============================================================
      INIT

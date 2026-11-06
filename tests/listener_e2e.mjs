@@ -213,7 +213,7 @@ async function main() {
 		// Rekam & Translate dari Radio V2 (browser): audio kit -> POST /webusb/audio -> /record-radio.
 		const audioBefore = await page.evaluate(`window.__kit.types['receiver:audio'] || 0`);
 		check('tanpa rekaman, kit tidak mengirim receiver:audio', audioBefore === 0, `${audioBefore} pesan`);
-		await page.evaluate(`${click('navTranslateBtn')}; (() => { const d = document.getElementById('deviceSelect'); d.value = '-2'; d.dispatchEvent(new Event('change')); })()`);
+		await page.evaluate(`${click('navTranslateBtn')}; ${click('translateModeManual')}; (() => { const d = document.getElementById('deviceSelect'); d.value = '-2'; d.dispatchEvent(new Event('change')); })()`);
 		await realClick(page, 'playRadioBtn');
 		const forwarding = await page.waitFor(`[...document.querySelectorAll('#logBox > *')].some(e => e.textContent.includes('audio VFO diteruskan ke backend'))`, 8_000);
 		check('Rekam & Translate memakai Radio V2 (browser) (audio diteruskan)', forwarding);
@@ -237,6 +237,22 @@ async function main() {
 		// Langganan audio dibuka saat mulai rekam dan ditutup lagi sesudahnya.
 		const subs = await page.evaluate(`window.__kit.results.filter(r => r.type === 'host:subscribe').map(r => r.code)`);
 		check('subscribe audio (buka saat rekam, tutup sesudahnya)', subs.length >= 2 && subs.every((c) => c === 'OK'), subs.join(', '));
+
+		// Mode Live dari Radio V2 (browser): ucapan langsung jadi kartu hasil di #liveFeed.
+		// Mock SDR tanpa squelch = satu ucapan panjang, ditutup saat Live dihentikan.
+		await page.evaluate(`${click('translateModeLive')}; (() => { const d = document.getElementById('liveDeviceSelect'); d.value = '-2'; d.dispatchEvent(new Event('change')); })()`);
+		const cardsBefore = await page.evaluate(`document.querySelectorAll('#liveFeed .live-card').length`);
+		await realClick(page, 'liveToggleBtn');
+		const liveRunning = await page.waitFor(`/Hentikan Live/.test(document.getElementById('liveToggleBtn').textContent)`, 10_000);
+		check('Mode Live mulai dengan Radio V2 (browser)', liveRunning, await page.evaluate(`document.getElementById('liveStateText').textContent`));
+		const busyManual = await page.evaluate(`fetch('/record-radio', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ device_index: -2 }) }).then(r => r.json())`);
+		check('selama Live, Rekam & Translate manual ditolak', !busyManual.ok && /Mode Live/.test(busyManual.error), busyManual.error);
+		await sleep(3000);
+		await realClick(page, 'liveToggleBtn');
+		const liveCard = await page.waitFor(`document.querySelectorAll('#liveFeed .live-card').length > ${cardsBefore} && /TANPA MODEL/.test(document.querySelector('#liveFeed .live-card').textContent)`, 20_000);
+		check('ucapan Live muncul sebagai kartu hasil', liveCard, await page.evaluate(`document.querySelector('#liveFeed .live-card .live-card-meta')?.textContent || 'tidak ada'`));
+		const liveStopped = await page.waitFor(`/Mulai Live/.test(document.getElementById('liveToggleBtn').textContent)`, 10_000);
+		check('Live berhenti, audio Radio V2 tidak diteruskan lagi', liveStopped);
 		await page.evaluate(click('navSetRadioBtn'));
 
 		await expectResult(page, 'stop', 'host:stop', click('spectrumToggleBtn'));
