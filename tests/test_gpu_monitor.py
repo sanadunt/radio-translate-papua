@@ -12,12 +12,12 @@ import radio_launcher  # noqa: E402
 
 class ParseTest(unittest.TestCase):
     def test_parses_nvidia_smi_csv(self):
-        sample = gpu_monitor.parse_line("NVIDIA GeForce RTX 3050 Laptop GPU, 37, 2350, 4096, 61, 18.52\n")
-        self.assertEqual(sample, {"name": "NVIDIA GeForce RTX 3050 Laptop GPU", "util": 37.0, "mem_used_mb": 2350.0,
-                                  "mem_total_mb": 4096.0, "temp_c": 61.0, "power_w": 18.52})
+        sample = gpu_monitor.parse_line("0, NVIDIA GeForce RTX 3050 Laptop GPU, 37, 2350, 4096, 61, 18.52\n")
+        self.assertEqual(sample, {"index": 0, "name": "NVIDIA GeForce RTX 3050 Laptop GPU", "util": 37.0,
+                                  "mem_used_mb": 2350.0, "mem_total_mb": 4096.0, "temp_c": 61.0, "power_w": 18.52})
 
     def test_not_available_values_and_bad_lines(self):
-        self.assertIsNone(gpu_monitor.parse_line("NVIDIA X, [N/A], 100, 4096, 50, [N/A]")["util"])
+        self.assertIsNone(gpu_monitor.parse_line("1, NVIDIA X, [N/A], 100, 4096, 50, [N/A]")["util"])
         self.assertIsNone(gpu_monitor.parse_line("garbage"))
 
     def test_without_nvidia_smi(self):

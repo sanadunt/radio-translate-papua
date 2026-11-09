@@ -58,6 +58,19 @@ dan terjemahan.
 
 ## GPU dan log
 
+**Pilih GPU** di halaman awal, panel **Perangkat AI**: *Otomatis* (GPU NVIDIA dengan
+VRAM terbesar, atau CPU bila tidak ada), GPU NVIDIA tertentu, atau *CPU saja*. Pilihan
+langsung berlaku: model dimuat ulang ke perangkat baru dalam beberapa detik, tanpa
+restart. Daftar "GPU terdeteksi" juga menampilkan GPU Intel/AMD; GPU itu dipakai
+browser, sedangkan model AI hanya bisa memakai GPU NVIDIA (CUDA) atau CPU.
+
+**Ganti laptop atau GPU tidak perlu instal/build ulang.** Model Whisper dan hasil
+konversi `best_bleu_*-ct2` tidak terikat ke GPU tertentu; tipe hitung dipilih saat
+dimuat sesuai kemampuan GPU (GPU NVIDIA lama tanpa fp16 otomatis memakai int8).
+Pastikan saja driver NVIDIA terbaru terpasang (CUDA 12.8). Pilihan disimpan di
+`device-settings.json`; `YALI_DEVICE=cuda:0` (atau `auto`/`cpu`) di
+`radio-translate.env` menguncinya.
+
 Bar di bawah kontrol Live menunjukkan GPU NVIDIA (beban sekarang dan puncak beberapa
 detik terakhir, VRAM, suhu) serta mesin Whisper dan terjemahan yang dipakai. Wajar
 bila di Task Manager GPU Intel terlihat sibuk dan GPU NVIDIA seperti diam: browser

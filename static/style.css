@@ -2291,3 +2291,21 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .live-sysbar .btn{ flex: 0 0 auto; }
 .live-options{ flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding-bottom: 2px; }
 .live-options .checkbox-row{ margin: 0; }
+
+/* ---- Halaman awal: Perangkat AI ---- */
+.ai-device-panel{ display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr); gap: 24px; margin-bottom: 24px; }
+.ai-device-main{ display: flex; flex-direction: column; gap: 8px; }
+.ai-device-main .panel-title{ margin: 0 0 4px; }
+.ai-device-main .manual-label{ margin: 0; }
+.ai-device-row{ display: flex; gap: 8px; }
+.ai-device-row .device-select{ flex: 1 1 auto; min-width: 0; }
+.ai-device-found .settings-title{ margin: 0 0 8px; }
+.ai-device-list{ list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ai-device-list li{
+  display: flex; justify-content: space-between; gap: 12px;
+  padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-sm);
+  font-size: 13.5px; color: var(--text-hi); background: rgba(0, 0, 0, 0.15);
+}
+.ai-device-list li.is-active{ border-color: var(--cyan); background: rgba(63, 224, 224, 0.08); }
+.ai-device-note{ color: var(--text-mid); white-space: nowrap; }
+.ai-device-list li.is-active .ai-device-note{ color: var(--cyan-bright); }

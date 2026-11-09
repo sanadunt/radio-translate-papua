@@ -76,6 +76,30 @@
     
     <p class="video-caption" id="videoCaption">Cara kerja Radio Translate Papua: dari suara radio ke Bahasa Indonesia (1:30)</p>
   </div>
+
+  <!-- Perangkat untuk model AI (Whisper & terjemahan): GET/POST /system/device(s) -->
+  <div class="panel ai-device-panel" id="aiDevicePanel">
+    <div class="ai-device-main">
+      <h2 class="panel-title">Perangkat AI</h2>
+      <label class="manual-label" for="aiDeviceSelect">Jalankan Whisper &amp; terjemahan di</label>
+      <div class="ai-device-row">
+        <select id="aiDeviceSelect" class="device-select">
+          <option value="auto">Otomatis</option>
+        </select>
+        <button type="button" class="btn btn-icon" id="aiDeviceRefresh" title="Deteksi ulang GPU" aria-label="Deteksi ulang GPU">
+          <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M4 4v5h5M20 20v-5h-5M4.5 9A8 8 0 0 1 19 8m.5 7A8 8 0 0 1 5 16" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
+      </div>
+      <p class="panel-hint" id="aiDeviceStatus">Mendeteksi GPU…</p>
+    </div>
+    <div class="ai-device-found">
+      <h3 class="settings-title">GPU terdeteksi</h3>
+      <ul class="ai-device-list" id="aiDeviceList"></ul>
+      <p class="panel-hint">Ganti GPU tidak perlu instal atau build ulang: model langsung dimuat ulang ke
+        perangkat yang dipilih (beberapa detik). GPU Intel/AMD dipakai browser untuk tampilan; model AI hanya
+        bisa memakai GPU NVIDIA (CUDA) atau CPU.</p>
+    </div>
+  </div>
   
 <div class="about-container">
 

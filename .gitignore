@@ -8,6 +8,7 @@ logs/
 rekaman_radio/
 radio-translate.env
 live-settings.json
+device-settings.json
 update-backup/
 
 # Model AI: besar, tetap di Google Drive. Taruh di folder ini atau di models/.

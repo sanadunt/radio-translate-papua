@@ -3969,6 +3969,107 @@
   pollLive();  // juga menyambung lagi ke sesi Live yang masih berjalan setelah halaman dimuat ulang
 
   /* ============================================================
+     PERANGKAT AI (halaman awal) — GET /system/devices, POST /system/device
+     ============================================================ */
+  const aiDeviceSelect = $('aiDeviceSelect');
+  const aiDeviceStatus = $('aiDeviceStatus');
+  const aiDeviceList = $('aiDeviceList');
+  let aiDeviceReloadTimer = null;
+
+  function gpuLabel(gpu){
+    const vram = gpu.vram_mb ? ` · ${liveNumber(gpu.vram_mb / 1024)} GB` : '';
+    return `GPU ${gpu.index} · ${gpu.name}${vram}`;
+  }
+
+  function renderAiDevices(data){
+    const auto = data.nvidia.find((g) => g.index === data.auto_index);
+    const options = [{ value: 'auto', text: `Otomatis (${auto ? auto.name : 'CPU, tidak ada GPU NVIDIA'})` }]
+      .concat(data.nvidia.map((g) => ({ value: `cuda:${g.index}`, text: gpuLabel(g) })))
+      .concat([{ value: 'cpu', text: 'CPU saja (tanpa GPU, lambat)' }]);
+    aiDeviceSelect.innerHTML = '';
+    for (const opt of options){
+      const el = document.createElement('option');
+      el.value = opt.value;
+      el.textContent = opt.text;
+      aiDeviceSelect.appendChild(el);
+    }
+    if (!options.some((o) => o.value === data.choice)){
+      const el = document.createElement('option');
+      el.value = data.choice;
+      el.textContent = `${data.choice} (tidak terdeteksi sekarang)`;
+      aiDeviceSelect.appendChild(el);
+    }
+    aiDeviceSelect.value = data.choice;
+    aiDeviceSelect.disabled = !!data.locked_by_env;
+
+    aiDeviceList.innerHTML = '';
+    const rows = data.nvidia.map((g) => ({
+      name: gpuLabel(g),
+      note: (data.active && data.active.type === 'cuda' && data.active.index === g.index) ? 'dipakai model AI' : 'bisa untuk AI (CUDA)',
+      on: !!(data.active && data.active.type === 'cuda' && data.active.index === g.index),
+    })).concat(data.other.map((name) => ({ name, note: 'dipakai browser, tidak untuk AI', on: false })));
+    if (!rows.length) rows.push({ name: 'Tidak ada GPU NVIDIA terdeteksi', note: 'model AI berjalan di CPU', on: false });
+    for (const row of rows){
+      const li = document.createElement('li');
+      li.className = row.on ? 'is-active' : '';
+      const name = document.createElement('span');
+      name.textContent = row.name;
+      const note = document.createElement('span');
+      note.className = 'ai-device-note';
+      note.textContent = row.note;
+      li.append(name, note);
+      aiDeviceList.appendChild(li);
+    }
+
+    let status;
+    if (data.locked_by_env) status = `Dikunci YALI_DEVICE=${data.choice} di radio-translate.env.`;
+    else if (data.no_model) status = 'Model AI belum aktif; pilihan ini dipakai begitu model dipasang.';
+    else if (data.models_state === 'loading' || data.models_state === 'idle') status = `Memuat model ke ${data.active ? data.active.name : 'perangkat'}…`;
+    else if (data.models_state === 'error') status = 'Model gagal dimuat di perangkat ini; lihat log.';
+    else if (data.active) status = `Dipakai sekarang: ${data.active.name}` +
+      (data.stt ? ` · Whisper ${shortEngine(data.stt)}` : '') + (data.mt ? ` · terjemahan ${shortEngine(data.mt)}` : '');
+    else status = 'Model dimuat saat dibutuhkan.';
+    aiDeviceStatus.textContent = status;
+
+    // Setelah ganti perangkat, pantau sampai model selesai dimuat.
+    clearTimeout(aiDeviceReloadTimer);
+    if (!data.no_model && (data.models_state === 'loading' || data.models_state === 'idle')){
+      aiDeviceReloadTimer = setTimeout(loadAiDevices, 1500);
+    }
+  }
+
+  async function loadAiDevices(){
+    try{
+      const data = await safeJson(await fetch(`${API_BASE}/system/devices`));
+      if (data.ok) renderAiDevices(data);
+      else aiDeviceStatus.textContent = data.error || 'Gagal mendeteksi GPU.';
+    } catch(err){
+      aiDeviceStatus.textContent = `Gagal mendeteksi GPU: ${err.message}`;
+    }
+  }
+
+  aiDeviceSelect.addEventListener('change', async () => {
+    const choice = aiDeviceSelect.value;
+    aiDeviceSelect.disabled = true;
+    aiDeviceStatus.textContent = 'Mengganti perangkat…';
+    try{
+      const data = await safeJson(await fetch(`${API_BASE}/system/device`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ choice }),
+      }));
+      if (!data.ok) throw new Error(data.error || 'gagal');
+      log(`Perangkat AI: ${aiDeviceSelect.options[aiDeviceSelect.selectedIndex].textContent}.`, 'ok');
+      renderAiDevices(data);
+    } catch(err){
+      log(`Gagal mengganti perangkat AI: ${err.message}`, 'err');
+      loadAiDevices();
+    } finally {
+      aiDeviceSelect.disabled = false;
+    }
+  });
+  $('aiDeviceRefresh').addEventListener('click', loadAiDevices);
+  loadAiDevices();
+
+  /* ============================================================
      INIT
      ============================================================ */
   drawFreqRuler(0, 0, false);

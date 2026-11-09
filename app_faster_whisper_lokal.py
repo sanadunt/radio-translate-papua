@@ -6,7 +6,12 @@
 # ==========================================================
 import os, sys, subprocess, venv, pathlib, gc
 # Wajib sebelum import torch: membantu mengurangi fragmentasi VRAM CUDA
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# (tidak didukung PyTorch di Windows; di sana hanya memunculkan peringatan).
+if os.name != "nt":
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# Nomor GPU CUDA = nomor di nvidia-smi (urutan slot PCI), supaya pilihan GPU di
+# halaman awal menunjuk kartu yang sama di torch, CTranslate2 dan nvidia-smi.
+os.environ.setdefault("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
 
 # Mode hemat VRAM untuk GPU kecil (4 GB): hanya 1 model besar aktif di GPU dalam satu waktu
 # (Whisper & terjemahan bergantian dimuat dari disk). "auto" (default) = aktif hanya bila
@@ -251,7 +256,8 @@ from web888_client import Web888Client, KIWI_AUDIO_RATE
 from hackrf_client import HackRFClient, HACKRF_AUDIO_RATE
 from webusb_audio_bridge import WebUSBAudioBridge
 from live_translator import LiveSession
-from gpu_monitor import GpuMonitor
+from gpu_monitor import GpuMonitor, find_nvidia_smi
+import ai_device
 from records_db import NOTE_MAX_CHARS, RecordsDB
 
 TARGET_SR = 16000
@@ -741,13 +747,25 @@ class TorchEnv:
         import torch
 
         self._torch = torch
-        if torch.cuda.is_available():
-            self.device = torch.device("cuda")
-        elif getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
-            self.device = torch.device("mps")
-        else:
-            self.device = torch.device("cpu")
+        self.device = self.resolve_device(device_settings.choice)
         return self._torch
+
+    def resolve_device(self, choice: str):
+        """Perangkat torch untuk pilihan di halaman awal (auto | cpu | cuda:N)."""
+        torch = self._torch
+        if torch.cuda.is_available():
+            count = torch.cuda.device_count()
+            vram = {i: torch.cuda.get_device_properties(i).total_memory for i in range(count)}
+            index = ai_device.resolve_choice(choice, count, vram)
+            if index is not None:
+                if choice.startswith("cuda:") and choice != f"cuda:{index}":
+                    print(f"[GPU] {choice} tidak ada; memakai cuda:{index}.", file=sys.stderr)
+                torch.cuda.set_device(index)
+                return torch.device(f"cuda:{index}")
+            return torch.device("cpu")
+        if choice != "cpu" and getattr(torch.backends, "mps", None) and torch.backends.mps.is_available():
+            return torch.device("mps")
+        return torch.device("cpu")
 
     def ensure_transformers(self):
         if self._transformers is not None:
@@ -767,6 +785,8 @@ class TorchEnv:
 
 
 torch_env = TorchEnv()
+# Pilihan perangkat AI dari halaman awal (ai_device.py); dibaca saat torch dimuat.
+device_settings = ai_device.DeviceSettings(DATA_DIR / "device-settings.json")
 
 
 def clear_torch_memory():
@@ -788,10 +808,22 @@ def clear_torch_memory():
 
 
 def is_cuda_device() -> bool:
+    return torch_env.device is not None and torch_env.device.type == "cuda"
+
+
+def cuda_index() -> int:
+    """Nomor GPU CUDA yang dipakai model (0 bila bukan CUDA)."""
+    return (torch_env.device.index or 0) if is_cuda_device() else 0
+
+
+def ct2_compute(device: str, index: int, preferred: Optional[str]) -> str:
+    """Tipe hitung CTranslate2 yang benar-benar didukung perangkat ini."""
+    import ctranslate2
     try:
-        return str(torch_env.device) == "cuda"
+        supported = ctranslate2.get_supported_compute_types(device, index)
     except Exception:
-        return False
+        supported = {"float32"}
+    return ai_device.pick_compute_type(supported, preferred, device)
 
 
 def cuda_model_dtype():
@@ -809,12 +841,11 @@ def faster_whisper_device_compute():
     int8_float16: bobot int8 (hemat VRAM) dengan hitungan fp16 -- lebih cepat
     dari int8 murni di GPU RTX. Bisa diganti lewat YALI_WHISPER_COMPUTE.
     """
-    torch = torch_env.ensure_torch()
-
-    if torch.cuda.is_available():
-        return "cuda", os.environ.get("YALI_WHISPER_COMPUTE", "int8_float16")
-
-    return "cpu", "int8"
+    torch_env.ensure_torch()
+    if is_cuda_device():
+        index = cuda_index()
+        return "cuda", ct2_compute("cuda", index, os.environ.get("YALI_WHISPER_COMPUTE", "int8_float16")), index
+    return "cpu", ct2_compute("cpu", 0, "int8"), 0
 
 
 _gpu_vram_gb: Optional[float] = None
@@ -827,8 +858,8 @@ def gpu_total_vram_gb() -> float:
         _gpu_vram_gb = 0.0
         try:
             torch = torch_env.ensure_torch()
-            if torch.cuda.is_available():
-                _gpu_vram_gb = torch.cuda.get_device_properties(0).total_memory / 1024 ** 3
+            if is_cuda_device():
+                _gpu_vram_gb = torch.cuda.get_device_properties(cuda_index()).total_memory / 1024 ** 3
         except Exception:
             pass
     return _gpu_vram_gb
@@ -868,17 +899,18 @@ def ct2_available() -> bool:
 
 
 def ct2_device_compute():
-    import ctranslate2
-    if ctranslate2.get_cuda_device_count() > 0:
-        return "cuda", os.environ.get("YALI_MT_COMPUTE", "int8_float16")
-    return "cpu", os.environ.get("YALI_MT_COMPUTE_CPU", "int8")
+    torch_env.ensure_torch()
+    if is_cuda_device():
+        index = cuda_index()
+        return "cuda", ct2_compute("cuda", index, os.environ.get("YALI_MT_COMPUTE", "int8_float16")), index
+    return "cpu", ct2_compute("cpu", 0, os.environ.get("YALI_MT_COMPUTE_CPU", "int8")), 0
 
 
 def gpu_name() -> Optional[str]:
     try:
         torch = torch_env.ensure_torch()
-        if torch.cuda.is_available():
-            return torch.cuda.get_device_name(0)
+        if is_cuda_device():
+            return torch.cuda.get_device_name(cuda_index())
     except Exception:
         pass
     return None
@@ -1523,7 +1555,7 @@ class PipelineService:
             if self._swap_needed():
                 self._unload_mt_model()
 
-            device, compute_type = faster_whisper_device_compute()
+            device, compute_type, device_index = faster_whisper_device_compute()
 
             print(
                 f"[FASTER-WHISPER RADIO] Loading model: {self.model_dir_radio} "
@@ -1537,6 +1569,7 @@ class PipelineService:
                 self._whisper_model_radio = WhisperModel(
                     self.model_dir_radio,
                     device=device,
+                    device_index=device_index,
                     compute_type=compute_type,
                 )
             self.stt_backend = f"faster-whisper ({device}, {compute_type})"
@@ -1551,7 +1584,7 @@ class PipelineService:
             if self._swap_needed():
                 self._unload_mt_model()
 
-            device, compute_type = faster_whisper_device_compute()
+            device, compute_type, device_index = faster_whisper_device_compute()
 
             print(
                 f"[FASTER-WHISPER UPLOAD] Loading model: {self.model_dir_upload} "
@@ -1565,6 +1598,7 @@ class PipelineService:
                 self._whisper_model_upload = WhisperModel(
                     self.model_dir_upload,
                     device=device,
+                    device_index=device_index,
                     compute_type=compute_type,
                 )
 
@@ -1804,9 +1838,10 @@ class PipelineService:
             transformers = torch_env.ensure_transformers()
             tok = transformers.AutoTokenizer.from_pretrained(str(out / "tokenizer"), use_fast=True)
             forced_bos = self._setup_mt_tokenizer(tok)
-            device, compute_type = ct2_device_compute()
+            device, compute_type, device_index = ct2_device_compute()
             started = time.monotonic()
-            translator = ctranslate2.Translator(str(out), device=device, compute_type=compute_type)
+            translator = ctranslate2.Translator(str(out), device=device, device_index=device_index,
+                                                compute_type=compute_type)
         except Exception as exc:
             print(f"[MT] Gagal memuat {out.name}, memakai transformers: {exc}", file=sys.stderr)
             return False
@@ -2019,6 +2054,32 @@ class PipelineService:
             self.models_state = "error"
             self.models_error = str(exc)
             print(f"[INIT ERROR] Gagal memuat model: {exc}", file=sys.stderr)
+
+    def change_device(self, choice: str):
+        """Pindahkan Whisper & terjemahan ke perangkat lain tanpa restart: model dilepas,
+        lalu dimuat ulang ke perangkat baru di background (beberapa detik)."""
+        global _gpu_vram_gb
+        device_settings.save(choice)
+        if NO_MODEL_MODE or torch_env._torch is None:
+            return
+        with self.model_lock, self.stt_lock, self.mt_lock:
+            self._whisper_model_radio = None
+            self._whisper_model_upload = None
+            self._tok_yali_id = None
+            self._mdl_yali_id = None
+            self._mt_ct2 = None
+            self.stt_backend = None
+            self.mt_backend = None
+            self._mt_forced_bos_token_id = None
+            clear_torch_memory()
+            torch_env.device = torch_env.resolve_device(device_settings.choice)
+            _gpu_vram_gb = None
+            _gpu_label_cache.clear()
+            self.models_state = "idle"
+        gpu_monitor.set_index(cuda_index() if is_cuda_device() else None)
+        print(f"[GPU] Perangkat AI diganti ke {device_settings.choice} -> {torch_env.device} "
+              f"({gpu_name() or 'CPU'}); model dimuat ulang.", file=sys.stderr)
+        self.warm_up_async()
 
     def warm_up_async(self):
         if NO_MODEL_MODE or not PRELOAD_MODELS:
@@ -3677,6 +3738,68 @@ def _gpu_label() -> Optional[str]:
     return _gpu_label_cache["name"]
 
 
+# ---------- PERANGKAT AI (halaman awal) ----------
+_other_gpus_cache: dict = {}
+
+
+def _other_gpus() -> list:
+    # Pertanyaan ke Windows (PowerShell) butuh 1–2 dtk; cukup sekali per jalan.
+    if "names" not in _other_gpus_cache:
+        _other_gpus_cache["names"] = ai_device.list_other_gpus()
+    return _other_gpus_cache["names"]
+
+
+def _monitor_index_from_smi() -> Optional[int]:
+    """GPU yang akan dipakai menurut nvidia-smi (sebelum torch dimuat / mode tanpa model)."""
+    nvidia = ai_device.list_nvidia_gpus(find_nvidia_smi())
+    return ai_device.resolve_choice(device_settings.choice, len(nvidia), {g["index"]: g["vram_mb"] or 0 for g in nvidia})
+
+
+def ai_device_status() -> dict:
+    nvidia = ai_device.list_nvidia_gpus(find_nvidia_smi())
+    auto_index = ai_device.auto_pick(nvidia)
+    active = None
+    if torch_env.device is not None:
+        active = {"type": torch_env.device.type, "index": cuda_index() if is_cuda_device() else None,
+                  "name": gpu_name() if is_cuda_device() else ("Apple GPU (MPS)" if torch_env.device.type == "mps" else "CPU")}
+    return {
+        "choice": device_settings.choice,
+        "locked_by_env": device_settings.locked_by_env,
+        "nvidia": nvidia,
+        "auto_index": auto_index,
+        "other": _other_gpus(),
+        "active": active,
+        "no_model": bool(NO_MODEL_MODE),
+        "models_state": pipeline.models_state,
+        "stt": pipeline.stt_backend,
+        "mt": pipeline.mt_backend,
+    }
+
+
+@app.route("/system/devices", methods=["GET"])
+def system_devices():
+    return jsonify({"ok": True, **ai_device_status()})
+
+
+@app.route("/system/device", methods=["POST"])
+def system_device_set():
+    data = request.get_json(force=True, silent=True) or {}
+    choice = str(data.get("choice") or "").strip().lower()
+    if not ai_device.valid_choice(choice):
+        return jsonify({"ok": False, "error": f"Pilihan perangkat tidak dikenal: {choice!r}"}), 400
+    if device_settings.locked_by_env:
+        return jsonify({"ok": False, "error": "Perangkat dikunci YALI_DEVICE di radio-translate.env."}), 409
+    try:
+        pipeline.change_device(choice)
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": f"Gagal mengganti perangkat: {exc}"}), 500
+    if NO_MODEL_MODE:
+        gpu_monitor.set_index(_monitor_index_from_smi())
+        print(f"[GPU] Perangkat AI disimpan: {choice} (dipakai saat model AI aktif).", file=sys.stderr)
+    return jsonify({"ok": True, **ai_device_status()})
+
+
 @app.route("/live/status", methods=["GET"])
 def live_status():
     try:
@@ -4501,7 +4624,9 @@ def prepare_runtime():
         try:
             torch_env.ensure_torch()
             torch_env.ensure_transformers()
-            print(f"[INIT] Device: {torch_env.device}", file=sys.stderr)
+            print(f"[INIT] Device: {torch_env.device} ({gpu_name() or 'tanpa GPU NVIDIA'}; pilihan: "
+                  f"{device_settings.choice})", file=sys.stderr)
+            gpu_monitor.set_index(cuda_index() if is_cuda_device() else None)
             pipeline.warm_up_async()
         except Exception as e:
             print(f"[INIT ERROR] {e}", file=sys.stderr)
@@ -4510,6 +4635,9 @@ def prepare_runtime():
     # secara default, lihat AUTO_SCAN_* di atas). Kalau YALI_AUTOSCAN_ENABLED=0,
     # thread tetap hidup tapi diam (idle) sampai diaktifkan lewat POST /scan/start.
     auto_scanner.launch()
+    if NO_MODEL_MODE:
+        threading.Thread(target=lambda: gpu_monitor.set_index(_monitor_index_from_smi()),
+                         name="gpu-index", daemon=True).start()
     threading.Thread(target=_auto_live_loop, name="live-auto", daemon=True).start()
     if live_auto.enabled:
         print("[INIT] Live Otomatis aktif: Live mulai sendiri begitu radio tersambung.", file=sys.stderr)

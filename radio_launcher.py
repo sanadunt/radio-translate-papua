@@ -62,6 +62,9 @@ CONFIG_TEMPLATE = """\
 # GPU: auto = Whisper & model terjemahan tetap di GPU bila VRAM >= 6 GB (mis. RTX 3070);
 # 1 = bergantian dimuat dari disk (GPU 4 GB); 0 = selalu keduanya di GPU.
 # YALI_LOW_VRAM_MODE=auto
+# Perangkat AI: auto (GPU NVIDIA VRAM terbesar), cuda:0, cuda:1, … atau cpu. Kosong = pilihan
+# di halaman awal (Perangkat AI); diisi = pilihan di halaman awal dikunci.
+# YALI_DEVICE=auto
 # YALI_WHISPER_COMPUTE=int8_float16
 # 0 = model baru dimuat saat ucapan pertama, bukan saat aplikasi dibuka.
 # YALI_PRELOAD_MODELS=1
