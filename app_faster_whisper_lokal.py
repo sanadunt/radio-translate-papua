@@ -251,6 +251,7 @@ from web888_client import Web888Client, KIWI_AUDIO_RATE
 from hackrf_client import HackRFClient, HACKRF_AUDIO_RATE
 from webusb_audio_bridge import WebUSBAudioBridge
 from live_translator import LiveSession
+from gpu_monitor import GpuMonitor
 from records_db import NOTE_MAX_CHARS, RecordsDB
 
 TARGET_SR = 16000
@@ -310,6 +311,9 @@ VOX_MIN_RECORD_SECONDS = float(os.environ.get("YALI_VOX_MIN_RECORD_SECONDS", "0.
 # (LISTEN_MAX_SECONDS, lihat di bawah). Bisa diubah lewat env var
 # YALI_RECORD_MAX_SECONDS tanpa mengubah kode.
 RECORD_MAX_SECONDS = float(os.environ.get("YALI_RECORD_MAX_SECONDS", "30.0"))
+# Audio radio boleh berhenti sesaat (mis. Python sibuk memuat model, browser yang
+# meneruskan Radio V2 tersendat) sebelum sesi rekam dianggap putus.
+RADIO_AUDIO_GRACE_SECONDS = float(os.environ.get("YALI_RADIO_AUDIO_GRACE_SECONDS", "20"))
 
 # Batas "menunggu sinyal PTT" per panggilan /record-radio -- dipakai baik
 # untuk menunggu ucapan PERTAMA maupun jeda menunggu ucapan BERIKUTNYA di
@@ -1402,6 +1406,7 @@ class PipelineService:
         record_started = 0.0
         last_audio_at = 0.0
         release_started: Optional[float] = None
+        audio_lost_at: Optional[float] = None
 
         def finalize_segment(reason: str):
             """Tutup ucapan yang sedang direkam jadi satu segmen, lalu balik
@@ -1424,7 +1429,24 @@ class PipelineService:
                 print("[WEB888] Dihentikan manual.", file=sys.stderr)
                 break
             if not client.connected_snd:
-                raise RuntimeError("Koneksi audio radio terputus (sumber berhenti mengirim audio).")
+                # Jeda sesaat tidak menghentikan sesi: ucapan yang sedang direkam ditutup,
+                # lalu tunggu audio kembali sampai RADIO_AUDIO_GRACE_SECONDS.
+                if audio_lost_at is None:
+                    audio_lost_at = now
+                    print("[RADIO] Audio radio berhenti sejenak, menunggu audio kembali…", file=sys.stderr)
+                    if is_recording:
+                        finalize_segment("audio radio terputus sejenak")
+                elif now - audio_lost_at >= RADIO_AUDIO_GRACE_SECONDS:
+                    raise RuntimeError(
+                        f"Koneksi audio radio terputus (tidak ada audio selama {RADIO_AUDIO_GRACE_SECONDS:.0f} dtk)."
+                    )
+                self.current_label = "Audio radio terputus sejenak, menunggu…"
+                time.sleep(0.1)
+                continue
+            if audio_lost_at is not None:
+                print(f"[RADIO] Audio radio kembali setelah {now - audio_lost_at:.1f} dtk.", file=sys.stderr)
+                audio_lost_at = None
+                listen_started = now
             if not is_recording and now - listen_started >= max_sec:
                 break
             if is_recording and now - record_started >= record_max_sec:
@@ -1498,7 +1520,7 @@ class PipelineService:
         from faster_whisper import WhisperModel
 
         if self._whisper_model_radio is None:
-            if should_swap_models_for_vram():
+            if self._swap_needed():
                 self._unload_mt_model()
 
             device, compute_type = faster_whisper_device_compute()
@@ -1526,7 +1548,7 @@ class PipelineService:
         from faster_whisper import WhisperModel
 
         if self._whisper_model_upload is None:
-            if should_swap_models_for_vram():
+            if self._swap_needed():
                 self._unload_mt_model()
 
             device, compute_type = faster_whisper_device_compute()
@@ -1553,19 +1575,32 @@ class PipelineService:
     def _model_section(self, lock):
         """Kunci untuk satu inferensi. Mode hemat VRAM: semua model bergantian
         (model_lock); selain itu Whisper dan terjemahan boleh jalan bersamaan."""
-        if should_swap_models_for_vram():
+        if self._swap_needed():
             with self.model_lock, lock:
                 yield
         else:
             with lock:
                 yield
 
-    @staticmethod
-    def _after_inference():
+    def _after_inference(self):
         # Membersihkan cache GPU + gc.collect() tiap panggilan memakan ratusan ms dan
         # memaksa alokasi ulang; hanya perlu saat model bergantian di GPU kecil.
-        if should_swap_models_for_vram():
+        if self._swap_needed():
             clear_torch_memory()
+
+    def _swap_needed(self) -> bool:
+        """Model bergantian (dimuat ulang dari disk tiap giliran) hanya bila GPU kecil
+        DAN terjemahan masih lewat transformers. Whisper + mBART versi CTranslate2
+        int8 muat bersamaan di GPU 4 GB (mis. RTX 3050 Laptop), jadi setelah model
+        terjemahan dikonversi keduanya tetap di GPU. YALI_LOW_VRAM_MODE=1 memaksa bergantian."""
+        if not should_swap_models_for_vram():
+            return False
+        if LOW_VRAM_SETTING in ("1", "true", "on"):
+            return True
+        if self._mt_ct2 is not None:
+            return False
+        out = mt_ct2_dir(self.model_dir_mt)
+        return not (ct2_available() and (out / "model.bin").is_file() and (out / "source.json").is_file())
 
     @staticmethod
     def _no_model_transcript(audio16) -> str:
@@ -1631,7 +1666,7 @@ class PipelineService:
 
         if self._tok_yali_id is not None and (self._mdl_yali_id is not None or self._mt_ct2 is not None):
             return
-        if should_swap_models_for_vram():
+        if self._swap_needed():
             # Mode hemat VRAM: sebelum load MT ke GPU, kosongkan Whisper dari GPU
             self._unload_whisper_models()
         if self._load_mt_ct2(self.model_dir_mt):
@@ -1967,7 +2002,7 @@ class PipelineService:
                     condition_on_previous_text=False,
                 )
                 list(segments)
-            if not should_swap_models_for_vram():
+            if not self._swap_needed():
                 with self._model_section(self.mt_lock):
                     self._ensure_yali_id()
                     self._mt_translate_batch(["halo"])
@@ -1976,7 +2011,7 @@ class PipelineService:
             print(
                 f"[INIT] Model '{lang}' siap dalam {time.monotonic() - started:.1f} dtk "
                 f"(device={torch_env.device}, GPU={gpu_name() or '-'}, VRAM={gpu_total_vram_gb():.1f} GB, "
-                f"model bergantian={'ya' if should_swap_models_for_vram() else 'tidak'}; "
+                f"model bergantian={'ya' if self._swap_needed() else 'tidak'}; "
                 f"STT={self.stt_backend}, terjemahan={self.mt_backend}).",
                 file=sys.stderr,
             )
@@ -3356,6 +3391,7 @@ def stop_record_radio():
 # Translate" manual tidak bisa berebut radio dengannya. Tiap ucapan disimpan
 # ke database Rekaman seperti rekaman manual (jenis "terjemah", 1 ucapan).
 live = LiveSession()
+gpu_monitor = GpuMonitor()
 LIVE_LISTEN_SECONDS = 10 ** 8  # praktis tanpa batas; berhenti lewat /live/stop
 # Potongan lebih pendek dari ini (mis. sisa PTT saat Live baru dimulai, klik squelch)
 # tidak dikirim ke Whisper: terlalu pendek untuk kata dan mudah jadi teks halusinasi.
@@ -3389,7 +3425,9 @@ def _live_stages(radio_name, radio, dev_index):
 
     def translate(result, context):
         text_papua = result["text_papua"]
+        mt_started = time.monotonic()
         text_indonesia = pipeline.yali_to_id_segments_bestbleu(text_papua) if text_papua else ""
+        mt_sec = time.monotonic() - mt_started
         audio, sr = result["_audio"], result["_sr"]
         pipeline.last_audio_clean = audio.copy()
         pipeline.last_audio_sr = sr
@@ -3397,7 +3435,17 @@ def _live_stages(radio_name, radio, dev_index):
         saved_path = save_recording_wav(audio, sr)
         record_id = log_recording("terjemah", result["_meta"], saved_path, result["duration_sec"], sr, 1,
                                   text_papua, text_indonesia)
-        print(f"[LIVE] Ucapan {result['duration_sec']:.1f} dtk: {text_papua!r} -> {text_indonesia!r}", file=sys.stderr)
+        gpu = gpu_monitor.latest()
+        vram = (f" | VRAM {gpu['mem_used_mb'] / 1024:.1f}/{gpu['mem_total_mb'] / 1024:.1f} GB"
+                if gpu and gpu.get("mem_used_mb") and gpu.get("mem_total_mb") else "")
+        print(
+            f"[LIVE] #{result['id']} audio {result['duration_sec']:.1f} dtk | "
+            f"Whisper {result.get('stt_sec', 0):.2f} dtk ({pipeline.stt_backend or '-'}) | "
+            f"terjemahan {mt_sec:.2f} dtk ({pipeline.mt_backend or '-'}) | "
+            f"teks tampil {result.get('text_latency_sec', 0):.1f} dtk setelah PTT{vram} | "
+            f"{text_papua!r} -> {text_indonesia!r}",
+            file=sys.stderr,
+        )
         return {"text_indonesia": text_indonesia, "record_id": record_id}
 
     return transcribe, translate
@@ -3411,32 +3459,23 @@ def _live_finished():
     print("[LIVE] Sesi Live selesai.", file=sys.stderr)
 
 
-@app.route("/live/start", methods=["POST"])
-def live_start():
-    data = request.get_json(force=True, silent=True) or {}
+def start_live_session(dev_index: Optional[int], lang: str, thr: float, meta: Optional[dict],
+                       auto_key: Optional[str] = None) -> dict:
+    """Mulai sesi Live (dipakai tombol Mulai Live dan Live Otomatis).
+    dev_index None = radio yang sedang tersambung di Set Radio (Web-888 / Radio V2 server)."""
     if live.running:
-        return jsonify({"ok": True, "already": True, **live.snapshot(after=10 ** 12)})
+        return {"ok": True, "already": True}
     if not pipeline.record_lock.acquire(blocking=False):
-        return jsonify({"ok": False, "busy": True,
-                        "error": "Radio sedang dipakai Rekam & Translate; hentikan dulu."}), 200
+        return {"ok": False, "busy": True, "error": "Radio sedang dipakai Rekam & Translate; hentikan dulu."}
     started = False
     try:
-        lang_result = pipeline.set_language(data.get("lang", ""))
-        try:
-            thr = max(float(data.get("rms_threshold", RMS_THRESHOLD)), 1e-9)
-        except (TypeError, ValueError):
-            thr = RMS_THRESHOLD
-        try:
-            dev_index = int(data.get("device_index"))
-        except (TypeError, ValueError):
-            dev_index = None
-
+        lang_result = pipeline.set_language(lang or "")
         radio_name, radio = resolve_radio_source(dev_index)
         if radio is not None:
             if not radio.connected_snd:
-                return jsonify({"ok": False, "error": (
+                return {"ok": False, "error": (
                     f"{radio_name} belum tersambung. Sambungkan dulu di Set Radio, "
-                    "lalu tunggu status audio siap.")}), 200
+                    "lalu tunggu status audio siap.")}
 
             def capture(on_segment, cancel):
                 pipeline.record_radio_web888(radio, threshold=thr, max_sec=LIVE_LISTEN_SECONDS,
@@ -3454,24 +3493,46 @@ def live_start():
             except Exception:
                 source = f"Perangkat {dev_index}"
         else:
-            return jsonify({"ok": False, "error": "Pilih sumber radio terlebih dahulu."}), 200
+            return {"ok": False, "error": "Pilih sumber radio terlebih dahulu."}
 
         info = {"source": source, "device_index": dev_index, "lang": pipeline.current_lang,
-                "meta": data.get("meta") if isinstance(data.get("meta"), dict) else {}}
+                "auto": auto_key is not None, "auto_key": auto_key,
+                "meta": meta if isinstance(meta, dict) else {}}
         transcribe, translate = _live_stages(radio_name, radio, dev_index)
         started = live.start(capture, transcribe, info, on_finish=_live_finished, translate=translate)
         if not started:
-            return jsonify({"ok": False, "busy": True, "error": "Sesi Live sebelumnya masih ditutup; coba lagi."}), 200
-        print(f"[LIVE] Mulai mendengarkan {source} (bahasa {pipeline.current_lang}).", file=sys.stderr)
-        return jsonify({"ok": True, "lang_warning": None if lang_result.get("ok") else lang_result.get("error"),
-                        **live.snapshot(after=10 ** 12)})
+            return {"ok": False, "busy": True, "error": "Sesi Live sebelumnya masih ditutup; coba lagi."}
+        print(f"[LIVE] Mulai mendengarkan {source} (bahasa {pipeline.current_lang})"
+              f"{' — otomatis' if auto_key else ''}.", file=sys.stderr)
+        return {"ok": True, "lang_warning": None if lang_result.get("ok") else lang_result.get("error")}
     finally:
         if not started:
             pipeline.record_lock.release()
 
 
+@app.route("/live/start", methods=["POST"])
+def live_start():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        thr = max(float(data.get("rms_threshold", RMS_THRESHOLD)), 1e-9)
+    except (TypeError, ValueError):
+        thr = RMS_THRESHOLD
+    try:
+        dev_index = int(data.get("device_index"))
+    except (TypeError, ValueError):
+        dev_index = None
+    if dev_index is None and not data.get("current_radio"):
+        return jsonify({"ok": False, "error": "Pilih sumber radio terlebih dahulu."}), 200
+    result = start_live_session(dev_index, data.get("lang", ""), thr, data.get("meta"))
+    return jsonify({**result, **live.snapshot(after=10 ** 12)}), 200
+
+
 @app.route("/live/stop", methods=["POST"])
 def live_stop():
+    data = request.get_json(force=True, silent=True) or {}
+    if data.get("disable_auto") and live_auto.enabled:
+        live_auto.update(enabled=False)
+        print("[LIVE] Live Otomatis dimatikan (Hentikan Live).", file=sys.stderr)
     live.stop()
     return jsonify({"ok": True, **live.snapshot(after=10 ** 12)})
 
@@ -3480,7 +3541,127 @@ def live_stop():
 def live_meta():
     data = request.get_json(force=True, silent=True) or {}
     live.update_meta(data.get("meta"))
+    if isinstance(data.get("meta"), dict):
+        live_auto.meta = dict(data["meta"])
     return jsonify({"ok": True})
+
+
+# ---------- LIVE OTOMATIS ----------
+# Bila aktif, Live selalu berjalan selama ada radio: mulai sendiri begitu radio
+# tersambung, menunggu (tanpa dianggap berhenti) saat audio hilang, dan pindah
+# sendiri bila sumber radio di Set Radio berganti. Setelan disimpan di
+# live-settings.json sehingga tetap aktif setelah aplikasi dibuka ulang.
+LIVE_SETTINGS_PATH = DATA_DIR / "live-settings.json"
+
+
+class LiveAutoSettings:
+    def __init__(self, path: Path):
+        self.path = Path(path)
+        self.enabled = False
+        self.device_index: Optional[int] = None   # None/negatif = radio yang tersambung
+        self.meta: dict = {}
+        self.waiting: Optional[str] = None
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+            self.enabled = bool(data.get("auto"))
+            self.device_index = data.get("device_index")
+            self.meta = data.get("meta") or {}
+        except (OSError, ValueError):
+            pass
+
+    def update(self, enabled: Optional[bool] = None, device_index="keep", meta: Optional[dict] = None):
+        if enabled is not None:
+            self.enabled = bool(enabled)
+        if device_index != "keep":
+            self.device_index = device_index
+        if isinstance(meta, dict):
+            self.meta = dict(meta)
+        try:
+            self.path.write_text(json.dumps({"auto": self.enabled, "device_index": self.device_index,
+                                             "meta": self.meta}, indent=1), encoding="utf-8")
+        except OSError as exc:
+            print(f"[LIVE] Setelan Live Otomatis tidak tersimpan: {exc}", file=sys.stderr)
+
+    def status(self) -> dict:
+        return {"enabled": self.enabled, "device_index": self.device_index, "waiting": self.waiting}
+
+
+live_auto = LiveAutoSettings(LIVE_SETTINGS_PATH)
+_NO_RADIO = object()
+LIVE_AUTO_RETRY_SECONDS = 10.0  # jeda sebelum mencoba lagi bila sesi otomatis langsung gagal
+_auto_live_next_try = 0.0
+
+
+def _auto_live_source():
+    """(dev_index, kunci sumber) untuk Live Otomatis, atau _NO_RADIO bila belum ada radio."""
+    dev = live_auto.device_index
+    if isinstance(dev, int) and dev >= 0:
+        return dev, f"device:{dev}"
+    radio = direct_radio()
+    if radio is not None and radio.connected_snd:
+        return None, f"radio:{active_spectrum_source()}"
+    if webusb_audio.connected_snd:
+        return WEBUSB_VIRTUAL_DEVICE_INDEX, "radio:webusb"
+    return _NO_RADIO
+
+
+def _auto_live_tick():
+    if not live_auto.enabled:
+        live_auto.waiting = None
+        return
+    choice = _auto_live_source()
+    if live.running:
+        # Sumber radio di Set Radio berganti: hentikan, sesi baru dimulai di putaran berikutnya.
+        if choice is not _NO_RADIO and live.info.get("auto") and live.info.get("auto_key") != choice[1]:
+            print(f"[LIVE] Sumber radio berganti ke {choice[1]}; Live Otomatis pindah.", file=sys.stderr)
+            live.stop()
+        live_auto.waiting = None
+        return
+    if not live.wait_finished(0):
+        return
+    if choice is _NO_RADIO:
+        live_auto.waiting = "Menunggu radio tersambung di Set Radio…"
+        return
+    global _auto_live_next_try
+    now = time.monotonic()
+    # Sesi otomatis sebelumnya langsung gagal (mis. perangkat audio dicabut): coba
+    # lagi berkala, bukan tiap detik.
+    failed_fast = bool(live.error) and live.started_at is not None and time.time() - live.started_at < 30
+    if failed_fast:
+        if not _auto_live_next_try:
+            _auto_live_next_try = now + LIVE_AUTO_RETRY_SECONDS
+        if now < _auto_live_next_try:
+            live_auto.waiting = f"{live.error} — dicoba lagi sebentar lagi…"
+            return
+    _auto_live_next_try = 0.0
+    dev_index, key = choice
+    result = start_live_session(dev_index, pipeline.current_lang, RMS_THRESHOLD, live_auto.meta, auto_key=key)
+    live_auto.waiting = None if result.get("ok") else result.get("error")
+
+
+def _auto_live_loop():
+    while True:
+        time.sleep(1.0)
+        try:
+            _auto_live_tick()
+        except Exception:
+            traceback.print_exc()
+
+
+@app.route("/live/auto", methods=["POST"])
+def live_auto_set():
+    data = request.get_json(force=True, silent=True) or {}
+    try:
+        dev_index = int(data.get("device_index"))
+    except (TypeError, ValueError):
+        dev_index = None
+    enabled = bool(data.get("enabled"))
+    live_auto.update(enabled=enabled, device_index=dev_index, meta=data.get("meta"))
+    print(f"[LIVE] Live Otomatis {'NYALA' if enabled else 'mati'}"
+          f"{f' (perangkat {dev_index})' if dev_index is not None and dev_index >= 0 else ''}.", file=sys.stderr)
+    if enabled:
+        _auto_live_tick()
+    return jsonify({"ok": True, "auto": live_auto.status(), **live.snapshot(after=10 ** 12)})
 
 
 _gpu_label_cache: dict = {}
@@ -3515,7 +3696,10 @@ def live_status():
             "gpu": _gpu_label(),
             "stt": pipeline.stt_backend,
             "mt": pipeline.mt_backend,
+            "swap": bool(not NO_MODEL_MODE and torch_env.device is not None and pipeline._swap_needed()),
         },
+        "gpu": gpu_monitor.snapshot(),
+        "auto": live_auto.status(),
     })
 
 
@@ -4326,6 +4510,9 @@ def prepare_runtime():
     # secara default, lihat AUTO_SCAN_* di atas). Kalau YALI_AUTOSCAN_ENABLED=0,
     # thread tetap hidup tapi diam (idle) sampai diaktifkan lewat POST /scan/start.
     auto_scanner.launch()
+    threading.Thread(target=_auto_live_loop, name="live-auto", daemon=True).start()
+    if live_auto.enabled:
+        print("[INIT] Live Otomatis aktif: Live mulai sendiri begitu radio tersambung.", file=sys.stderr)
     print(
         f"[INIT] Auto-scan frekuensi HT: "
         f"{'AKTIF' if AUTO_SCAN_ENABLED_DEFAULT else 'nonaktif (idle)'} "

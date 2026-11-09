@@ -28,6 +28,14 @@ dengan jam, frekuensi, teks Papua dan terjemahan Indonesia. Centang **Bacakan
 terjemahan otomatis** untuk TTS. Semua ucapan juga tersimpan di halaman **Rekaman**.
 Selama Live berjalan, Rekam & Translate manual tidak bisa dipakai (radionya sama).
 
+**Otomatis (selalu dengarkan)**: centang di bar Live supaya operator tidak perlu
+menekan apa pun. Live mulai sendiri begitu ada radio tersambung di Set Radio, terus
+mendengarkan, menunggu (bukan berhenti) saat audio hilang sementara, dan pindah
+sendiri bila sumber radio berganti. Setiap suara yang masuk direkam ke halaman
+**Rekaman**. Setelannya tersimpan (`live-settings.json`), jadi tetap nyala setelah
+aplikasi dibuka ulang; tinggal sambungkan radio. **Hentikan Live** sekaligus
+mematikan Otomatis; centang lagi untuk menyalakan.
+
 **Manual (cara lama)**: tab kedua di Auto Translate. Isinya sama seperti dulu:
 rekam satu sesi, unggah WAV/MP3, atau ketik teks Papua.
 
@@ -47,6 +55,24 @@ diganti, konversi diulang sendiri. Untuk kembali ke cara lama:
 `YALI_MT_BACKEND=transformers` di `radio-translate.env`. Pill model di Hasil Live
 menunjukkan GPU yang dipakai; arahkan kursor ke pill itu untuk melihat mesin Whisper
 dan terjemahan.
+
+## GPU dan log
+
+Bar di bawah kontrol Live menunjukkan GPU NVIDIA (beban sekarang dan puncak beberapa
+detik terakhir, VRAM, suhu) serta mesin Whisper dan terjemahan yang dipakai. Wajar
+bila di Task Manager GPU Intel terlihat sibuk dan GPU NVIDIA seperti diam: browser
+(tampilan, spektrum) memakai GPU Intel, sedangkan Whisper dan terjemahan memakai
+NVIDIA lewat CUDA hanya sepersekian detik per ucapan. Beban CUDA tampil di grafik
+"Cuda"/"Compute" Task Manager (klik judul grafik "3D" lalu pilih), bukan di "3D".
+
+GPU 4 GB (mis. RTX 3050 Laptop): sebelum model terjemahan dikonversi ke CTranslate2,
+Whisper dan terjemahan bergantian dimuat dari disk. Setelah konversi (otomatis, sekali)
+keduanya muat bersamaan di GPU dan tidak dimuat ulang lagi.
+
+Log ada di folder `logs/` (tombol **Buka folder log** di bar GPU): `radio-translate.log`
+untuk sesi sekarang, `radio-translate.1.log` … `.10.log` untuk 10 sesi sebelumnya.
+Setiap baris diberi jam, dan setiap ucapan Live dicatat lengkap: lama audio, lama
+Whisper dan terjemahan beserta mesinnya, kapan teks tampil, VRAM, dan teksnya.
 
 ## Filter suara radio
 

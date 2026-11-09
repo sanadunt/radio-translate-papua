@@ -2229,7 +2229,6 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .live-dot[data-state="busy"]{ background: var(--cyan); box-shadow: 0 0 10px rgba(63, 224, 224, 0.7); animation: live-pulse 1.2s ease-in-out infinite; }
 @keyframes live-pulse{ 50%{ opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce){ .live-dot{ animation: none !important; } }
-.live-tts{ flex: 0 0 auto; margin: 0 0 10px; }
 
 .live-feed-panel{ flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 12px; }
 .live-feed-head{ display: flex; align-items: center; gap: 12px; }
@@ -2280,3 +2279,15 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .settings-status.is-error{ color: #ffb3b3; }
 .slider:disabled + .settings-value{ opacity: 0.45; }
 .live-card.is-pending .live-card-id{ color: var(--text-dim); font-style: italic; font-weight: 500; }
+
+/* Baris info sistem Mode Live: GPU, VRAM, mesin, log */
+.live-sysbar{ display: flex; align-items: center; gap: 10px; padding: 8px 18px; font-size: 12.5px; }
+.live-sys-label{ font: 600 11px var(--font-display); letter-spacing: 0.08em; text-transform: uppercase; color: var(--cyan); }
+.live-sys-value{ color: var(--text-mid); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+#liveGpuInfo{ flex: 0 1 auto; cursor: help; }
+#liveEngineInfo{ flex: 1 1 auto; }
+.live-vram{ flex: 0 0 90px; }
+.live-vram .meter-track{ margin: 0; }
+.live-sysbar .btn{ flex: 0 0 auto; }
+.live-options{ flex: 0 0 auto; display: flex; flex-direction: column; gap: 6px; padding-bottom: 2px; }
+.live-options .checkbox-row{ margin: 0; }

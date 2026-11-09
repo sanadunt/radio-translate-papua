@@ -37,7 +37,7 @@ BACKUP_DIR = "update-backup"
 
 # Data pengguna di folder aplikasi: tidak pernah ditimpa oleh update.
 PRESERVE = {
-    ".git", ".venv", "models", "logs", "rekaman_radio", "radio-translate.env",
+    ".git", ".venv", "models", "logs", "rekaman_radio", "radio-translate.env", "live-settings.json",
     BACKUP_DIR, "__pycache__", "virtual_env_papua", "build", "dist", "node_modules",
 }
 PRESERVE_PATTERNS = (re.compile(r"^whisper-.*"), re.compile(r"^best_bleu_.*"))

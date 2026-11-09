@@ -69,6 +69,8 @@ CONFIG_TEMPLATE = """\
 # <model>-ct2, sekitar 1 menit, lalu dipakai terus); transformers = cara lama.
 # YALI_MT_BACKEND=auto
 # YALI_MT_COMPUTE=int8_float16
+# Detik audio radio boleh hilang (mis. browser tersendat) sebelum sesi rekam dianggap putus.
+# YALI_RADIO_AUDIO_GRACE_SECONDS=20
 # Mode Live: potongan suara lebih pendek dari ini (detik) tidak diterjemahkan.
 # YALI_LIVE_MIN_SECONDS=0.6
 
@@ -162,9 +164,12 @@ def load_config(data_dir: Path) -> Path:
 # Log: semua print ke konsol juga ditulis ke file (aplikasi .app/.exe tanpa konsol)
 # ----------------------------------------------------------------------
 class _Tee:
+    """Konsol apa adanya; file log diberi jam di awal tiap baris."""
+
     def __init__(self, stream, log_file):
         self._stream = stream
         self._log = log_file
+        self._line_start = True
 
     def write(self, text):
         if self._stream is not None:
@@ -172,7 +177,12 @@ class _Tee:
                 self._stream.write(text)
             except Exception:
                 pass
-        self._log.write(text)
+        for piece in text.splitlines(keepends=True):
+            if self._line_start:
+                now = time.time()
+                self._log.write(time.strftime("%H:%M:%S", time.localtime(now)) + f".{int(now % 1 * 1000):03d} ")
+            self._log.write(piece)
+            self._line_start = piece.endswith("\n")
         self._log.flush()
         return len(text)
 
@@ -188,11 +198,34 @@ class _Tee:
         return False
 
 
+LOG_KEEP = 10  # log sesi sebelumnya: radio-translate.1.log (terbaru) … radio-translate.10.log
+
+
+def rotate_logs(log_dir: Path, keep: int = LOG_KEEP):
+    """Simpan log sesi sebelumnya alih-alih menimpanya."""
+    oldest = log_dir / f"radio-translate.{keep}.log"
+    if oldest.exists():
+        oldest.unlink()
+    for index in range(keep - 1, 0, -1):
+        older = log_dir / f"radio-translate.{index}.log"
+        if older.exists():
+            older.replace(log_dir / f"radio-translate.{index + 1}.log")
+    current = log_dir / "radio-translate.log"
+    if current.exists():
+        current.replace(log_dir / "radio-translate.1.log")
+
+
 def setup_logging(data_dir: Path) -> Path:
     log_dir = data_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "radio-translate.log"
-    log_file = open(log_path, "w", encoding="utf-8", buffering=1)
+    try:
+        rotate_logs(log_dir)
+    except OSError as exc:  # mis. file masih dibuka program lain di Windows
+        print(f"[LAUNCHER] Log lama tidak bisa diputar: {exc}", file=sys.stderr)
+    log_file = open(log_path, "a", encoding="utf-8", buffering=1)
+    log_file.write(f"===== {APP_NAME} {APP_VERSION} · {time.strftime('%Y-%m-%d %H:%M:%S')} · "
+                   f"{platform.platform()} · Python {platform.python_version()} =====\n")
     sys.stdout = _Tee(sys.stdout, log_file)
     sys.stderr = _Tee(sys.stderr, log_file)
     return log_path
@@ -317,6 +350,23 @@ def register_app_routes(core, data_dir: Path, config_path: Path, log_path: Path)
             "log": str(log_path),
             "no_model": core.NO_MODEL_MODE,
         })
+
+    @core.app.route("/app/open-logs", methods=["POST"])
+    def app_open_logs():
+        # Membuka folder log di Explorer/Finder komputer ini (bukan perangkat lain).
+        if request.remote_addr not in ("127.0.0.1", "::1"):
+            return jsonify({"ok": False, "error": "Folder log hanya bisa dibuka dari komputer ini."}), 403
+        folder = str(log_path.parent)
+        try:
+            if os.name == "nt":
+                os.startfile(folder)  # noqa: S606 - folder milik aplikasi sendiri
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", folder])
+            else:
+                subprocess.Popen(["xdg-open", folder])
+        except Exception as exc:
+            return jsonify({"ok": False, "error": f"Gagal membuka folder log: {exc}", "folder": folder}), 500
+        return jsonify({"ok": True, "folder": folder})
 
     @core.app.route("/app/shutdown", methods=["POST"])
     def app_shutdown():

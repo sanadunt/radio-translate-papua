@@ -3537,6 +3537,7 @@
   const liveStateText = $('liveStateText');
   const liveMeterFill = $('liveMeterFill');
   const liveAutoTts = $('liveAutoTts');
+  const liveAutoMode = $('liveAutoMode');
   const liveStats = $('liveStats');
   const liveModelPill = $('liveModelPill');
   const liveFeed = $('liveFeed');
@@ -3553,6 +3554,9 @@
   let liveViaWebusb = false;
   let liveMetaSent = '';
   let liveTtsChain = Promise.resolve();
+  let liveAuto = { enabled: false, waiting: null };   // Live Otomatis (dari backend)
+  let liveAutoPending = false;                          // permintaan ubah saklar masih berjalan
+  let liveWebusbStarting = false;
 
   function showTranslateMode(mode){
     const live = mode !== 'manual';
@@ -3596,7 +3600,10 @@
   }
   document.addEventListener('devices-loaded', syncLiveDevices);
   $('navTranslateBtn').addEventListener('click', syncLiveDevices);
-  liveDeviceSelect.addEventListener('change', () => { liveDeviceTouched = true; });
+  liveDeviceSelect.addEventListener('change', () => {
+    liveDeviceTouched = true;
+    if (liveAutoMode.checked) setLiveAuto(true);  // sumber otomatis ikut pilihan baru
+  });
 
   // Bahasa Live = bahasa Auto Translate (satu pilihan, dua tempat).
   liveLangSelect.value = papuaLangSelect.value;
@@ -3712,8 +3719,58 @@
     liveDeviceSelect.disabled = liveRunning;
   }
 
+  // Baris info sistem: GPU (nvidia-smi lewat backend), mesin Whisper & terjemahan.
+  const liveGpuInfo = $('liveGpuInfo');
+  const liveVramFill = $('liveVramFill');
+  const liveEngineInfo = $('liveEngineInfo');
+  const liveOpenLogsBtn = $('liveOpenLogsBtn');
+
+  function shortEngine(text){
+    // "faster-whisper (cuda, int8_float16)" -> "CUDA int8_float16"
+    const m = /\(([^,]+),\s*([^)]+)\)/.exec(text || '');
+    return m ? `${m[1].toUpperCase()} ${m[2]}` : (text || '—');
+  }
+
+  function renderSysbar(gpuInfo, models){
+    const gpu = gpuInfo && gpuInfo.gpu;
+    if (gpu){
+      const parts = [gpu.name];
+      if (gpu.util != null) parts.push(`beban ${Math.round(gpu.util)}%` + (gpu.util_peak != null && gpu.util_peak > gpu.util ? ` (puncak ${Math.round(gpu.util_peak)}%)` : ''));
+      if (gpu.mem_used_mb != null && gpu.mem_total_mb) parts.push(`VRAM ${liveNumber(gpu.mem_used_mb / 1024)} / ${liveNumber(gpu.mem_total_mb / 1024)} GB`);
+      if (gpu.temp_c != null) parts.push(`${Math.round(gpu.temp_c)}°C`);
+      liveGpuInfo.textContent = parts.join(' · ');
+      liveVramFill.style.width = gpu.mem_total_mb ? `${clamp((gpu.mem_used_mb / gpu.mem_total_mb) * 100, 2, 100)}%` : '2%';
+    } else {
+      liveGpuInfo.textContent = gpuInfo && gpuInfo.error ? gpuInfo.error : 'GPU NVIDIA tidak terdeteksi (nvidia-smi tidak ada)';
+      liveVramFill.style.width = '2%';
+    }
+    if (models.no_model){
+      liveEngineInfo.textContent = 'tanpa model AI';
+    } else {
+      const parts = [`Whisper ${models.stt ? shortEngine(models.stt) : 'belum dimuat'}`,
+        `terjemahan ${models.mt ? (/CTranslate2/.test(models.mt) ? 'CTranslate2 ' : 'transformers ') + shortEngine(models.mt) : 'belum dimuat'}`];
+      if (models.swap) parts.push('model bergantian (GPU kecil)');
+      liveEngineInfo.textContent = parts.join(' · ');
+    }
+  }
+
+  fetch(`${API_BASE}/app/info`).then(safeJson).then((info) => {
+    if (!info.ok || !info.log) return;
+    liveOpenLogsBtn.hidden = false;
+    liveOpenLogsBtn.title = info.log;
+  }).catch(() => {});
+  liveOpenLogsBtn.addEventListener('click', async () => {
+    try{
+      const data = await safeJson(await fetch(`${API_BASE}/app/open-logs`, { method: 'POST' }));
+      log(data.ok ? `Folder log dibuka: ${data.folder}` : `Folder log: ${data.error}`, data.ok ? 'ok' : 'warn');
+    } catch(err){
+      log(`Gagal membuka folder log: ${err.message}`, 'err');
+    }
+  });
+
   function renderLiveStatus(data){
     const models = data.models || {};
+    renderSysbar(data.gpu, models);
     const where = models.gpu || String(models.device || '').toUpperCase() || 'CPU';
     const modelText = models.no_model ? 'Tanpa model AI (teks penanda)'
       : models.state === 'ready' ? `Model siap · ${where}`
@@ -3728,6 +3785,9 @@
     // Mendengarkan/merekam dan memproses berjalan bersamaan: keduanya ditampilkan.
     let state = 'idle';
     let text = data.error ? `Berhenti: ${data.error}` : 'Belum berjalan';
+    if (!data.running && liveAuto.enabled){
+      text = `Otomatis · ${liveAuto.waiting || 'menunggu radio…'}`;
+    }
     if (data.running){
       const inFlight = (data.queue || 0) + (data.stt_busy ? 1 : 0) + (data.mt_busy ? 1 : 0);
       const work = inFlight ? ` · ${inFlight} ucapan diproses` : '';
@@ -3754,6 +3814,10 @@
       const res = await fetch(`${API_BASE}/live/status?after=${liveLastRev}`);
       const data = await safeJson(res);
       if (!data.ok) return;
+      if (data.auto){
+        liveAuto = data.auto;
+        if (!liveAutoPending) liveAutoMode.checked = !!data.auto.enabled;
+      }
       for (const item of data.items){
         liveLastRev = Math.max(liveLastRev, item.rev);
         renderLiveItem(item);
@@ -3767,6 +3831,12 @@
       renderLiveStatus(data);
       setLiveButton();
       if (liveRunning){
+        // Pilihan sumber menunjukkan radio yang benar-benar didengar (sesi otomatis
+        // memakai radio yang tersambung di Set Radio).
+        const used = data.info?.device_index ?? vfoRecordDevice();
+        if (used != null && Array.from(liveDeviceSelect.options).some((o) => o.value === String(used))){
+          liveDeviceSelect.value = String(used);
+        }
         // Frekuensi/mode terbaru dari Set Radio untuk ucapan berikutnya.
         const meta = JSON.stringify(recordMetaForDevice(liveDeviceSelect.value));
         if (meta !== liveMetaSent){
@@ -3777,14 +3847,25 @@
         }
       }
       if (wasRunning && !liveRunning){
-        if (liveViaWebusb){ stopWebusbForwarding(); liveViaWebusb = false; }
-        log(data.error ? `Live berhenti: ${data.error}` : 'Live dihentikan.', data.error ? 'err' : 'warn');
+        if (liveAuto.enabled){
+          // Live Otomatis memulai sesi baru sendiri begitu audio radio kembali.
+          if (data.error) log(`Live otomatis menunggu radio kembali (${data.error}).`, 'info');
+        } else {
+          if (liveViaWebusb){ stopWebusbForwarding(); liveViaWebusb = false; }
+          log(data.error ? `Live berhenti: ${data.error}` : 'Live dihentikan.', data.error ? 'err' : 'warn');
+        }
+      }
+      // Live Otomatis dengan Radio V2 di browser: audio kit diteruskan selama RX berjalan.
+      if (liveAuto.enabled && Number(liveDeviceSelect.value) < 0 && listenerActive
+          && listenerClient?.status?.running && !webusbForwarding && !liveWebusbStarting){
+        liveWebusbStarting = true;
+        startWebusbForwarding().then((ok) => { liveViaWebusb = ok; }).finally(() => { liveWebusbStarting = false; });
       }
     } catch(err){
       /* backend sibuk/terputus: coba lagi di putaran berikutnya */
     } finally {
       clearTimeout(livePollTimer);
-      livePollTimer = setTimeout(pollLive, liveRunning ? LIVE_POLL_MS : 3000);
+      livePollTimer = setTimeout(pollLive, liveRunning ? LIVE_POLL_MS : (liveAuto.enabled ? 1000 : 3000));
     }
   }
 
@@ -3833,10 +3914,47 @@
   async function stopLive(){
     liveStopping = true;
     setLiveButton();
-    try{ await fetch(`${API_BASE}/live/stop`, { method: 'POST' }); }
+    // Menghentikan Live juga mematikan Otomatis; kalau tidak, sesi langsung dimulai lagi.
+    const disableAuto = liveAutoMode.checked;
+    if (disableAuto){ liveAutoMode.checked = false; liveAuto = { ...liveAuto, enabled: false }; }
+    try{
+      await fetch(`${API_BASE}/live/stop`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ disable_auto: disableAuto }),
+      });
+      if (disableAuto) log('Live dihentikan; mode Otomatis dimatikan.', 'warn');
+    }
     catch(err){ log(`Gagal menghentikan Live: ${err.message}`, 'err'); }
+    if (liveViaWebusb){ stopWebusbForwarding(); liveViaWebusb = false; }
     pollLive();
   }
+
+  async function setLiveAuto(enabled){
+    liveAutoPending = true;
+    const deviceIndex = liveDeviceSelect.value;
+    try{
+      const data = await safeJson(await fetch(`${API_BASE}/live/auto`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          enabled,
+          device_index: deviceIndex === '' || isNaN(Number(deviceIndex)) ? null : Number(deviceIndex),
+          meta: recordMetaForDevice(deviceIndex),
+        }),
+      }));
+      if (!data.ok) throw new Error(data.error || 'gagal');
+      liveAuto = data.auto;
+      log(enabled
+        ? 'Live Otomatis nyala: Live mulai sendiri begitu radio tersambung dan terus mendengarkan.'
+        : 'Live Otomatis mati (Live yang sedang berjalan tetap jalan sampai dihentikan).', enabled ? 'ok' : 'info');
+    } catch(err){
+      log(`Gagal mengubah Live Otomatis: ${err.message}`, 'err');
+      liveAutoMode.checked = !enabled;
+    } finally {
+      liveAutoPending = false;
+      pollLive();
+    }
+  }
+  liveAutoMode.addEventListener('change', () => setLiveAuto(liveAutoMode.checked));
 
   liveToggleBtn.addEventListener('click', () => (liveRunning ? stopLive() : startLive()));
   $('liveClearBtn').addEventListener('click', () => {

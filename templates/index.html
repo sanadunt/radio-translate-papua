@@ -531,10 +531,25 @@
           <div class="meter-fill" id="liveMeterFill"></div>
         </div>
       </div>
-      <label class="checkbox-row live-tts">
-        <input type="checkbox" id="liveAutoTts">
-        <span>Bacakan terjemahan otomatis</span>
-      </label>
+      <div class="live-options">
+        <label class="checkbox-row" title="Live mulai sendiri begitu radio tersambung, terus mendengarkan, menunggu saat audio hilang sementara, dan pindah sendiri bila sumber radio berganti. Tetap aktif setelah aplikasi dibuka ulang. Setiap ucapan tersimpan di Rekaman.">
+          <input type="checkbox" id="liveAutoMode">
+          <span>Otomatis (selalu dengarkan)</span>
+        </label>
+        <label class="checkbox-row">
+          <input type="checkbox" id="liveAutoTts">
+          <span>Bacakan terjemahan otomatis</span>
+        </label>
+      </div>
+    </div>
+
+    <div class="panel live-sysbar" id="liveSysbar">
+      <span class="live-sys-label">GPU</span>
+      <span class="live-sys-value" id="liveGpuInfo" title="Browser (tampilan, spektrum) biasanya memakai GPU Intel. Whisper dan terjemahan memakai GPU NVIDIA lewat CUDA, berupa lonjakan singkat tiap ucapan. Di Task Manager Windows, beban CUDA tampil di grafik &quot;Cuda&quot; atau &quot;Compute&quot;: klik judul grafik &quot;3D&quot; lalu pilih salah satunya.">memeriksa…</span>
+      <div class="live-vram" title="VRAM GPU terpakai"><div class="meter-track"><div class="meter-fill" id="liveVramFill"></div></div></div>
+      <span class="live-sys-label">Mesin</span>
+      <span class="live-sys-value" id="liveEngineInfo">—</span>
+      <button type="button" class="btn btn-ghost btn-sm" id="liveOpenLogsBtn" hidden>Buka folder log</button>
     </div>
 
     <div class="panel live-feed-panel">

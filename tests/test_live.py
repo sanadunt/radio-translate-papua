@@ -1,4 +1,5 @@
 """Test Mode Live (live_translator.py + endpoint /live/*). Jalankan: npm run test:py"""
+import json
 import os
 import sys
 import tempfile
@@ -240,6 +241,51 @@ class LiveEndpointTest(unittest.TestCase):
         self.assertFalse(http.get("/live/status").get_json()["running"])
         self.assertTrue(core.pipeline.record_lock.acquire(blocking=False))
         core.pipeline.record_lock.release()
+
+    def test_auto_live_follows_radio_and_survives_disconnect(self):
+        core, http = self.core, self.http
+        from unittest import mock
+        settings_path = Path(self._tmp.name) / "live-settings.json"
+
+        def wait_for(cond, timeout=15):
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline and not cond():
+                core._auto_live_tick()
+                time.sleep(0.2)
+            return cond()
+        with mock.patch.object(core, "live_auto", core.LiveAutoSettings(settings_path)), \
+                mock.patch.object(core, "RADIO_AUDIO_GRACE_SECONDS", 1.0):
+            try:
+                result = http.post("/live/auto", json={"enabled": True, "device_index": -1}).get_json()
+                self.assertTrue(result["auto"]["enabled"])
+                self.assertTrue(json.loads(settings_path.read_text())["auto"])
+                core._auto_live_tick()
+                self.assertFalse(core.live.running)
+                self.assertIn("Menunggu radio", http.get("/live/status").get_json()["auto"]["waiting"])
+
+                core._set_last_known_ht_freq(155_700_000)
+                http.post("/spectrum/start", json={"source": "hackrf-sim"})
+                self.assertTrue(wait_for(lambda: core.live.running), "Live tidak mulai sendiri saat radio tersambung")
+                self.assertTrue(core.live.info["auto"])
+
+                # Radio diputus: sesi menunggu sebentar lalu selesai, Otomatis menunggu radio lagi.
+                core.stop_all_radio_sources()
+                self.assertTrue(wait_for(lambda: not core.live.running and core.live_auto.waiting, 20))
+                http.post("/spectrum/start", json={"source": "hackrf-sim"})
+                self.assertTrue(wait_for(lambda: core.live.running), "Live tidak mulai lagi saat radio kembali")
+
+                stopped = http.post("/live/stop", json={"disable_auto": True}).get_json()
+                self.assertTrue(stopped["ok"])
+                self.assertFalse(core.live_auto.enabled)
+                self.assertFalse(json.loads(settings_path.read_text())["auto"])
+                self.assertTrue(core.live.wait_finished(10))
+                core._auto_live_tick()
+                self.assertFalse(core.live.running)
+            finally:
+                core.live.stop()
+                core.live.wait_finished(10)
+                core.stop_all_radio_sources()
+                core._set_active_source("sdrpp")
 
     def test_start_without_source_is_refused(self):
         result = self.http.post("/live/start", json={"device_index": None}).get_json()
