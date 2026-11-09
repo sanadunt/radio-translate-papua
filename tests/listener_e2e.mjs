@@ -101,6 +101,7 @@ const INSTRUMENT = `(() => {
 		if (!d || d.ch !== 'hackrf-listener-kit') return;
 		window.__kit.types[d.type] = (window.__kit.types[d.type] || 0) + 1;
 		if (d.type === 'receiver:result') window.__kit.results.push({ type: window.__kit.sent[d.id] || '?', code: d.code });
+		if (d.type === 'receiver:status') window.__kit.status = d;
 	});
 	const frame = document.getElementById('listenerFrame').contentWindow;
 	const original = frame.postMessage.bind(frame);
@@ -198,6 +199,25 @@ async function main() {
 		await expectResult(page, 'start {mock: true, listen: true} (klik operator)', 'host:start', () => realClick(page, 'spectrumToggleBtn'), 20_000);
 		const audio = await page.waitFor(`document.querySelector('#listenerStatus dd:nth-of-type(6)')?.textContent === 'aktif'`, 5_000);
 		check('audio VFO aktif (tidak ditahan browser)', audio, await page.evaluate(`document.querySelector('#listenerStatus dd:nth-of-type(6)')?.textContent`));
+		// Filter suara (preset Standar, bawaan) nyala: speaker kit dibisukan, halaman ini
+		// memutar receiver:audio lewat filter.
+		const muted = await page.waitFor(`window.__kit.status?.outputMuted === true`, 5_000);
+		check('filter nyala: speaker panel radio dibisukan (host:output-mute)', muted);
+		const viaFilter = await page.waitFor(`(() => { const i = window.radioAudioFilterInfo(); return i.listener.viaFilter && i.listener.ctxState === 'running' && i.listener.chunksPlayed >= 10; })()`, 8_000);
+		const monitorInfo = await page.evaluate(`window.radioAudioFilterInfo()`);
+		check('filter nyala: suara Radio V2 diputar halaman ini lewat filter (GTCRN)',
+			viaFilter && /GtcrnWorkletNode/.test((monitorInfo.chain || []).join('>')),
+			`${monitorInfo.listener.chunksPlayed} potongan, AudioContext ${monitorInfo.listener.ctxState}, ${(monitorInfo.chain || []).length} node`);
+		check('baris Speaker di status: lewat filter suara', /^lewat filter suara$/.test(await page.evaluate(`document.querySelector('#listenerStatus dd:nth-of-type(7)')?.textContent`)));
+		const volumeSent = await page.evaluate(`window.__kit.status?.vfo?.volume`);
+		check('filter nyala: volume VFO kit 100 (volume diatur filter halaman ini)', volumeSent === 100, String(volumeSent));
+
+		// Filter Mati: panel radio memutar suaranya sendiri lagi, tanpa langganan audio.
+		await page.evaluate(`document.querySelector('#filterPresets [data-filter-preset="off"]').click()`);
+		const unmuted = await page.waitFor(`window.__kit.status?.outputMuted === false`, 5_000);
+		check('filter mati: speaker panel radio dipulihkan', unmuted);
+		check('baris Speaker di status: panel radio', await page.waitFor(`document.querySelector('#listenerStatus dd:nth-of-type(7)')?.textContent === 'panel radio (tanpa filter)'`, 5_000));
+		await sleep(600);
 		const gains = await page.evaluate(resultOf('host:gains'));
 		check('gains (dikirim sebelum start)', gains?.code === 'OK', gains?.code);
 		check('tanpa langganan spektrum (spektrum tampil di panel kit)', await page.evaluate(`!window.__kit.types['receiver:spectrum']`));
@@ -236,8 +256,11 @@ async function main() {
 		check('kembali ke tab Listener: panel radio tampil lagi', await page.evaluate(`!document.getElementById('listenerFrameWrap').hidden`));
 
 		// Rekam & Translate dari Radio V2 (browser): audio kit -> POST /webusb/audio -> /record-radio.
-		const audioBefore = await page.evaluate(`window.__kit.types['receiver:audio'] || 0`);
-		check('tanpa rekaman, kit tidak mengirim receiver:audio', audioBefore === 0, `${audioBefore} pesan`);
+		// Filter masih Mati, jadi tanpa rekaman tidak ada langganan audio.
+		const audioIdleStart = await page.evaluate(`window.__kit.types['receiver:audio'] || 0`);
+		await sleep(1500);
+		const audioIdleEnd = await page.evaluate(`window.__kit.types['receiver:audio'] || 0`);
+		check('filter mati & tanpa rekaman: kit tidak mengirim receiver:audio', audioIdleEnd === audioIdleStart, `${audioIdleEnd - audioIdleStart} pesan`);
 		await page.evaluate(`${click('navTranslateBtn')}; ${click('translateModeManual')}; (() => { const d = document.getElementById('deviceSelect'); d.value = '-2'; d.dispatchEvent(new Event('change')); })()`);
 		await realClick(page, 'playRadioBtn');
 		const forwarding = await page.waitFor(`[...document.querySelectorAll('#logBox > *')].some(e => e.textContent.includes('audio VFO diteruskan ke backend'))`, 8_000);
@@ -279,6 +302,13 @@ async function main() {
 		const liveStopped = await page.waitFor(`/Mulai Live/.test(document.getElementById('liveToggleBtn').textContent)`, 10_000);
 		check('Live berhenti, audio Radio V2 tidak diteruskan lagi', liveStopped);
 		await page.evaluate(click('navSetRadioBtn'));
+
+		// Filter dinyalakan lagi (Kuat): speaker kit dibisukan lagi dan halaman ini memutar suaranya.
+		await page.evaluate(`document.querySelector('#filterPresets [data-filter-preset="strong"]').click()`);
+		const mutedAgain = await page.waitFor(`window.__kit.status?.outputMuted === true`, 5_000);
+		const playedBefore = await page.evaluate(`window.radioAudioFilterInfo().listener.chunksPlayed`);
+		const playing = await page.waitFor(`window.radioAudioFilterInfo().listener.chunksPlayed >= ${playedBefore} + 5`, 5_000);
+		check('filter dinyalakan lagi (Kuat): kit bisu, halaman ini memutar lewat filter', mutedAgain && playing);
 
 		await expectResult(page, 'stop', 'host:stop', click('spectrumToggleBtn'));
 

@@ -2,7 +2,7 @@
 
 Folder ini berisi hasil build (`dist/`) HackRF Listener Kit, disajikan oleh Flask di `/listener/`.
 
-- Source: https://github.com/sanadunt/hackrf-listener-kit (commit `01a4531`, branch `main`), tanpa perubahan.
+- Source: https://github.com/sanadunt/hackrf-listener-kit (commit `3978646`, branch `main`), tanpa perubahan.
 - Lisensi: AGPL-3.0-only (lihat `LICENSE` dan `NOTICE.md`), turunan BrowSDR (https://github.com/jLynx/BrowSDR).
 - `static/hackrf-listener-client.js` dan `.d.ts` disalin tanpa perubahan dari `client/` di repo yang sama.
 

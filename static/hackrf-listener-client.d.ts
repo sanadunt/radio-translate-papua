@@ -51,6 +51,8 @@ export interface ListenerStatus extends Envelope {
 	} | null;
 	squelchOpen: boolean;
 	audio: 'none' | 'suspended' | 'running';
+	/** host:output-mute: the kit page's speaker is silent; receiver:audio still flows. */
+	outputMuted: boolean;
 	recording: boolean;
 	error: { code: 'USB_LOST' | 'RX_ERROR' | 'NO_WEBUSB' } | null;
 	notice: string | null;
@@ -123,6 +125,8 @@ export interface ListenerClient {
 	addMarker(frequencyHz: number): Promise<ListenerResult>;
 	removeMarker(markerId: string): Promise<ListenerResult>;
 	appearance(options: { theme?: 'dark' | 'light'; lang?: 'en' | 'id' }): Promise<ListenerResult>;
+	/** Silences (true) or restores the kit page's own speaker; receiver:audio keeps flowing. */
+	outputMute(muted: boolean): Promise<ListenerResult>;
 	destroy(): void;
 }
 
