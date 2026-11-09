@@ -1599,11 +1599,17 @@
   let web888AudioNextStart = 0;
   let web888AudioPollTimer = null;
   let web888AudioActive = false;
+  // Semua potongan audio monitor masuk ke sini, lalu lewat filter suara
+  // (radio-audio-filter.js) sebelum ke speaker. 48 kHz: syarat peredam noise AI.
+  let web888MonitorInput = null;
 
   function ensureWeb888AudioCtx(){
     if (!web888AudioCtx){
       const Ctx = window.AudioContext || window.webkitAudioContext;
-      web888AudioCtx = new Ctx();
+      try{ web888AudioCtx = new Ctx({ sampleRate: 48000, latencyHint: 'interactive' }); }
+      catch(err){ web888AudioCtx = new Ctx(); }
+      web888MonitorInput = web888AudioCtx.createGain();
+      attachRadioFilter(web888AudioCtx, web888MonitorInput);
     }
     if (web888AudioCtx.state === 'suspended'){
       web888AudioCtx.resume().catch(() => {});
@@ -1650,7 +1656,7 @@
 
       const src = ctx.createBufferSource();
       src.buffer = buffer;
-      src.connect(ctx.destination);
+      src.connect(web888MonitorInput);
 
       // Jadwalkan sambung-menyambung: kalau jadwal sebelumnya sudah lewat
       // (mis. jeda jaringan), mulai lagi dari "sekarang" supaya tidak makin
@@ -1707,6 +1713,140 @@
     if (web888AudioPollTimer) clearInterval(web888AudioPollTimer);
     web888AudioPollTimer = null;
   }
+
+  /* ------------------------------------------------------------
+     FILTER SUARA — rantai Web Audio di static/radio-audio-filter.js
+     (bandpass pita suara HT, peredam noise AI, perjelas suara, gerbang
+     noise, AGC). Hanya untuk monitor yang didengar; rekaman & Whisper
+     tetap memakai audio asli dari backend. Setelan diingat per browser.
+     ------------------------------------------------------------ */
+  const FILTER_STORAGE_KEY = 'radioAudioFilter';
+  const filterModule = import(`${API_BASE}/static/radio-audio-filter.js`);
+  const filterPresets = $('filterPresets');
+  const filterBandpass = $('filterBandpass');
+  const filterBandLabel = $('filterBandLabel');
+  const filterDenoise = $('filterDenoise');
+  const filterClarity = $('filterClarity');
+  const filterAgc = $('filterAgc');
+  const filterBoost = $('filterBoost');
+  const filterBoostValue = $('filterBoostValue');
+  const filterGate = $('filterGate');
+  const audioFilterStatus = $('audioFilterStatus');
+  const audioFilterNote = $('audioFilterNote');
+  let radioFilter = null;
+  let radioFilterSettings = null;   // { preset: 'off'|'light'|'standard'|'strong'|'custom', ...nilai }
+  let monitorFallbackGain = null;   // dipakai selama modul filter belum termuat
+
+  function monitorVolume(){
+    return volumeSlider ? clamp(Number(volumeSlider.value), 0, 100) / 100 : 1;
+  }
+  function updateMonitorVolume(){
+    if (radioFilter) radioFilter.setVolume(monitorVolume());
+    if (monitorFallbackGain) monitorFallbackGain.gain.value = monitorVolume();
+  }
+  if (volumeSlider) volumeSlider.addEventListener('input', updateMonitorVolume);
+  if (volumeIcon) volumeIcon.addEventListener('click', updateMonitorVolume);
+
+  function attachRadioFilter(ctx, input){
+    monitorFallbackGain = ctx.createGain();
+    monitorFallbackGain.gain.value = monitorVolume();
+    input.connect(monitorFallbackGain).connect(ctx.destination);
+    filterModule.then(({ RadioAudioFilter }) => {
+      radioFilter = new RadioAudioFilter(ctx, radioFilterSettings || {});
+      radioFilter.onStatus = renderFilterStatus;
+      radioFilter.output.connect(ctx.destination);
+      radioFilter.setVolume(monitorVolume());
+      input.disconnect();
+      input.connect(radioFilter.input);
+      monitorFallbackGain.disconnect();
+      monitorFallbackGain = null;
+      renderFilterStatus(radioFilter.status);
+    }).catch((err) => log(`Filter suara tidak bisa dimuat: ${err.message}`, 'warn'));
+  }
+
+  function saveFilterSettings(){
+    try{ localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify(radioFilterSettings)); } catch(err){ /* abaikan */ }
+  }
+
+  function renderFilterControls(){
+    const s = radioFilterSettings;
+    filterPresets.querySelectorAll('[data-filter-preset]').forEach((chip) => {
+      chip.classList.toggle('active', chip.dataset.filterPreset === s.preset);
+    });
+    filterBandpass.checked = s.bandpass;
+    filterBandLabel.textContent = `${s.lowHz}–${s.highHz} Hz`;
+    filterDenoise.value = s.denoise;
+    filterClarity.checked = s.clarity;
+    filterAgc.checked = s.agc;
+    filterBoost.value = s.boostDb;
+    filterBoost.disabled = !s.agc;
+    filterBoostValue.textContent = `+${s.boostDb} dB`;
+    setSliderFill(filterBoost);
+    filterGate.checked = s.gate;
+  }
+
+  function renderFilterStatus(status){
+    const s = radioFilterSettings;
+    let text = '';
+    if (s && s.preset === 'off') text = 'mati';
+    else if (status && status.denoise === 'loading') text = 'memuat AI…';
+    else if (status && status.denoise === 'on') text = 'AI aktif';
+    else if (status && status.denoise === 'error') text = 'AI gagal';
+    else if (s) text = 'aktif';
+    audioFilterStatus.textContent = text;
+    audioFilterStatus.title = (status && status.error) || '';
+    audioFilterStatus.classList.toggle('is-error', !!(status && status.error));
+    if (status && status.error) log(`Filter suara: ${status.error}`, 'warn');
+  }
+
+  function renderFilterNote(){
+    const source = radioSourceSelect.value;
+    audioFilterNote.textContent = source === 'webusb'
+      ? 'Radio V2 di browser memutar suaranya sendiri di panel radio, jadi filter ini belum berlaku untuk sumber itu.'
+      : 'Hanya mengubah suara yang didengar. Rekaman dan Whisper tetap memakai suara asli.';
+  }
+
+  function applyFilterSettings(next){
+    radioFilterSettings = next;
+    saveFilterSettings();
+    renderFilterControls();
+    if (radioFilter) radioFilter.apply(next);
+    renderFilterStatus(radioFilter ? radioFilter.status : null);
+  }
+  function changeFilter(patch){
+    applyFilterSettings({ ...radioFilterSettings, ...patch, preset: 'custom' });
+  }
+
+  filterModule.then(({ FILTER_PRESETS }) => {
+    let saved = null;
+    try{ saved = JSON.parse(localStorage.getItem(FILTER_STORAGE_KEY) || 'null'); } catch(err){ /* abaikan */ }
+    radioFilterSettings = saved && typeof saved === 'object'
+      ? { ...FILTER_PRESETS.standard, ...saved }
+      : { ...FILTER_PRESETS.standard, preset: 'standard' };
+    renderFilterControls();
+    renderFilterStatus(null);
+    if (radioFilter) radioFilter.apply(radioFilterSettings);
+
+    filterPresets.addEventListener('click', (e) => {
+      const chip = e.target.closest('[data-filter-preset]');
+      if (!chip) return;
+      const preset = chip.dataset.filterPreset;
+      applyFilterSettings({ ...FILTER_PRESETS[preset], preset });
+      log(`Filter suara: ${chip.textContent}.`, 'info');
+    });
+    filterBandpass.addEventListener('change', () => changeFilter({ bandpass: filterBandpass.checked }));
+    filterDenoise.addEventListener('change', () => changeFilter({ denoise: filterDenoise.value }));
+    filterClarity.addEventListener('change', () => changeFilter({ clarity: filterClarity.checked }));
+    filterAgc.addEventListener('change', () => changeFilter({ agc: filterAgc.checked }));
+    filterBoost.addEventListener('input', () => changeFilter({ boostDb: Number(filterBoost.value) }));
+    filterGate.addEventListener('change', () => changeFilter({ gate: filterGate.checked }));
+  }).catch(() => { audioFilterStatus.textContent = 'tidak tersedia'; });
+  radioSourceSelect.addEventListener('change', renderFilterNote);
+  renderFilterNote();
+  // Untuk pengujian/diagnosis: rantai filter yang sedang aktif.
+  window.radioAudioFilterInfo = () => (radioFilter
+    ? { settings: radioFilterSettings, status: radioFilter.status, chain: radioFilter.chainNames, sampleRate: radioFilter.ctx.sampleRate }
+    : { settings: radioFilterSettings, status: null });
   let scopeZoom = zoomSlider ? Number(zoomSlider.value) : 1;
   let scopeContrast = contrastSlider ? Number(contrastSlider.value) : 1;
 

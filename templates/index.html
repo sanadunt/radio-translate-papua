@@ -301,6 +301,46 @@
             <p class="panel-hint" id="squelchNote">Sambungkan radio untuk mengatur squelch.</p>
           </section>
 
+          <section class="settings-section" id="audioFilterSection">
+            <h3 class="settings-title">Filter suara <span class="settings-status" id="audioFilterStatus"></span></h3>
+            <div class="preset-row" id="filterPresets" aria-label="Kekuatan filter suara">
+              <button type="button" class="chip" data-filter-preset="off">Mati</button>
+              <button type="button" class="chip" data-filter-preset="light">Ringan</button>
+              <button type="button" class="chip active" data-filter-preset="standard">Standar</button>
+              <button type="button" class="chip" data-filter-preset="strong">Kuat</button>
+            </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="filterBandpass" checked>
+              <span>Pita suara HT <span id="filterBandLabel">300–3000 Hz</span></span>
+            </label>
+            <div class="filter-denoise-row">
+              <label class="manual-label" for="filterDenoise">Peredam noise AI</label>
+              <select id="filterDenoise" class="device-select">
+                <option value="gtcrn" selected>GTCRN (paling bersih)</option>
+                <option value="speex">Speex (paling ringan)</option>
+                <option value="off">Mati</option>
+              </select>
+            </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="filterClarity" checked>
+              <span>Perjelas suara</span>
+            </label>
+            <label class="checkbox-row">
+              <input type="checkbox" id="filterAgc" checked>
+              <span>Kuatkan suara pelan (AGC)</span>
+            </label>
+            <div class="settings-slider-row">
+              <label class="manual-label" for="filterBoost">Penguat</label>
+              <input type="range" id="filterBoost" class="slider" min="0" max="18" step="1" value="6">
+              <span class="settings-value" id="filterBoostValue">+6 dB</span>
+            </div>
+            <label class="checkbox-row">
+              <input type="checkbox" id="filterGate">
+              <span>Bisukan desis di sela ucapan</span>
+            </label>
+            <p class="panel-hint" id="audioFilterNote">Hanya mengubah suara yang didengar. Rekaman dan Whisper tetap memakai suara asli.</p>
+          </section>
+
           <section class="settings-section" id="gainSection" hidden>
             <h3 class="settings-title">Gain</h3>
             <div class="settings-grid-2">

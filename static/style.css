@@ -2271,3 +2271,11 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 .live-card-id{ margin: 6px 0 4px; font-size: 18px; font-weight: 600; line-height: 1.4; color: var(--text-hi); }
 .live-card-papua{ margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-mid); }
 .live-card-error{ margin: 6px 0 0; font-size: 14px; color: #ffd0d0; }
+
+/* ---- Filter suara (Set Radio → Listener) ---- */
+.filter-denoise-row{ display: grid; grid-template-columns: 112px 1fr; align-items: center; gap: 8px; }
+.filter-denoise-row .manual-label{ margin: 0; }
+#audioFilterSection .checkbox-row{ margin: 0; }
+#audioFilterSection .settings-title .settings-status{ margin-left: 6px; text-transform: none; letter-spacing: 0; font-weight: 500; }
+.settings-status.is-error{ color: #ffb3b3; }
+.slider:disabled + .settings-value{ opacity: 0.45; }

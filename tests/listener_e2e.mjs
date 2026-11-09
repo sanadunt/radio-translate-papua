@@ -151,6 +151,31 @@ async function main() {
 		if (await page.waitFor(`!document.getElementById('setupWizard').hidden`, 3_000)) {
 			await page.evaluate(click('setupSkipBtn'));
 		}
+
+		// Filter suara monitor (static/radio-audio-filter.js): preset Standar = bandpass +
+		// GTCRN + AGC; desis lebar 2 dtk harus turun jauh dibanding tanpa filter.
+		const filter = await page.evaluate(`(async () => {
+			const { RadioAudioFilter, FILTER_PRESETS } = await import('/static/radio-audio-filter.js');
+			const sr = 48000, n = 2 * sr;
+			let seed = 7; const rnd = () => ((seed = (seed * 1103515245 + 12345) >>> 0) / 4294967296) * 2 - 1;
+			const noise = new Float32Array(n).map(() => rnd() * 0.06);
+			async function level(settings){
+				const ctx = new OfflineAudioContext(1, n, sr);
+				const f = new RadioAudioFilter(ctx, settings);
+				for (let t = 0; t < 100 && settings.denoise !== 'off' && f.status.denoise !== 'on'; t++) await new Promise((r) => setTimeout(r, 50));
+				const buf = ctx.createBuffer(1, n, sr); buf.copyToChannel(noise, 0);
+				const src = ctx.createBufferSource(); src.buffer = buf; src.connect(f.input); f.output.connect(ctx.destination); src.start();
+				const out = (await ctx.startRendering()).getChannelData(0);
+				let sum = 0; for (let i = sr / 2; i < n; i++) sum += out[i] * out[i];
+				return { db: 10 * Math.log10(sum / (n - sr / 2) + 1e-24), chain: f.chainNames.join('>'), denoise: f.status.denoise };
+			}
+			const off = await level(FILTER_PRESETS.off), standard = await level(FILTER_PRESETS.standard);
+			return { reductionDb: +(off.db - standard.db).toFixed(1), chain: standard.chain, denoise: standard.denoise,
+				uiPreset: window.radioAudioFilterInfo().settings?.preset };
+		})()`);
+		check('filter suara Standar: GTCRN aktif dan desis turun >= 15 dB',
+			filter && filter.denoise === 'on' && /GtcrnWorkletNode/.test(filter.chain) && filter.reductionDb >= 15 && filter.uiPreset === 'standard',
+			filter ? `${filter.reductionDb} dB, preset ${filter.uiPreset}` : 'gagal');
 		await page.evaluate(`${click('navSetRadioBtn')}; ${selectSource('webusb')}`);
 		const ready = await page.waitFor(`[...document.querySelectorAll('#logBox > *')].some(e => e.textContent.includes('panel radio siap'))`, 15_000);
 		check('kit siap (receiver:hello)', ready);

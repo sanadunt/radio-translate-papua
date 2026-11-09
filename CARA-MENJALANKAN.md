@@ -35,6 +35,25 @@ Dengan GPU NVIDIA 6 GB ke atas (mis. RTX 3070), Whisper dan model terjemahan dim
 sekali saat aplikasi dibuka dan tetap di GPU, jadi hasil muncul sekitar satu detik
 setelah PTT dilepas. Pengaturannya ada di `radio-translate.env` (`YALI_LOW_VRAM_MODE`).
 
+## Filter suara radio
+
+Di **Set Radio → Listener → Filter suara** (berlaku untuk Radio V1 · Web-888 dan
+Radio V2 lewat server):
+
+| Preset | Isi | Kapan dipakai |
+|---|---|---|
+| Mati | suara asli | membandingkan |
+| Ringan | pita suara HT 300–3400 Hz, perjelas suara, AGC | sinyal sudah bersih tapi pelan |
+| **Standar** (bawaan) | pita 300–3000 Hz + peredam noise AI GTCRN + perjelas + AGC | desis/noise biasa |
+| Kuat | Standar + pita lebih sempit + sela ucapan dibisukan | noise berat |
+
+Pilihan di bawahnya bisa diubah satu per satu (peredam noise GTCRN atau Speex,
+penguat 0 sampai +18 dB, dsb.); setelan diingat browser. Filter hanya mengubah
+suara yang **didengar**: rekaman dan Whisper tetap memakai suara asli, karena
+denoise sebelum Whisper justru sering menambah salah dengar.
+Radio V2 · USB di browser memutar suaranya sendiri di panel radio, jadi filter
+ini belum berlaku untuk sumber itu.
+
 ## Model AI (wizard)
 
 Saat pertama dibuka, aplikasi menampilkan wizard **Model AI** (bisa dibuka lagi
