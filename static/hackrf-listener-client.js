@@ -98,6 +98,8 @@ export function createListenerClient(iframe, options = {}) {
 		addMarker(frequencyHz) { return client.send('host:marker-add', { frequencyHz }); },
 		removeMarker(markerId) { return client.send('host:marker-remove', { markerId }); },
 		appearance(options) { return client.send('host:appearance', options); },
+		/** Silences (true) or restores the kit page's own speaker; receiver:audio keeps flowing. */
+		outputMute(muted) { return client.send('host:output-mute', { muted: Boolean(muted) }); },
 		/** Stops listening; commands still waiting resolve with NOT_READY. */
 		destroy() {
 			if (destroyed) return;
