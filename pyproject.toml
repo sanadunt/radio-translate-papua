@@ -1,6 +1,6 @@
 [project]
 name = "radio-translate-papua"
-version = "1.4.0"
+version = "1.4.1"
 description = "Penerjemah Bahasa Papua -> Indonesia dari radio (Radio V1 Web-888, Radio V2 USB)"
 requires-python = ">=3.12,<3.14"
 license = { text = "Proprietary; listener_kit/ AGPL-3.0-only" }
