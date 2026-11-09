@@ -31,9 +31,22 @@ Selama Live berjalan, Rekam & Translate manual tidak bisa dipakai (radionya sama
 **Manual (cara lama)**: tab kedua di Auto Translate. Isinya sama seperti dulu:
 rekam satu sesi, unggah WAV/MP3, atau ketik teks Papua.
 
+Live memproses dalam dua tahap yang berjalan bersamaan: begitu Whisper selesai,
+teks Papua langsung tampil ("Menerjemahkan…"), lalu terjemahannya menyusul di kartu
+yang sama. Ucapan berikutnya sudah ditranskrip selagi ucapan sebelumnya diterjemahkan,
+dan ucapan yang datang beruntun masuk antrian (tidak ada yang terlewat). Setiap kartu
+menunjukkan lama tiap tahap ("teks 0,3 dtk · terjemahan 0,5 dtk").
+
 Dengan GPU NVIDIA 6 GB ke atas (mis. RTX 3070), Whisper dan model terjemahan dimuat
-sekali saat aplikasi dibuka dan tetap di GPU, jadi hasil muncul sekitar satu detik
-setelah PTT dilepas. Pengaturannya ada di `radio-translate.env` (`YALI_LOW_VRAM_MODE`).
+sekali saat aplikasi dibuka dan tetap di GPU (`YALI_LOW_VRAM_MODE`). Terjemahan memakai
+**CTranslate2** di CUDA, mesin yang sama dengan faster-whisper, dan biasanya beberapa
+kali lebih cepat dari cara lama. Pertama kali dipakai, model `best_bleu_*` dikonversi
+otomatis ke folder `best_bleu_*-ct2` di sebelahnya (sekali, sekitar 1 menit, +1,2 GB
+per bahasa). Selama konversi terjemahan tetap jalan dengan cara lama. Kalau model
+diganti, konversi diulang sendiri. Untuk kembali ke cara lama:
+`YALI_MT_BACKEND=transformers` di `radio-translate.env`. Pill model di Hasil Live
+menunjukkan GPU yang dipakai; arahkan kursor ke pill itu untuk melihat mesin Whisper
+dan terjemahan.
 
 ## Filter suara radio
 

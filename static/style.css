@@ -2279,3 +2279,4 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 #audioFilterSection .settings-title .settings-status{ margin-left: 6px; text-transform: none; letter-spacing: 0; font-weight: 500; }
 .settings-status.is-error{ color: #ffb3b3; }
 .slider:disabled + .settings-value{ opacity: 0.45; }
+.live-card.is-pending .live-card-id{ color: var(--text-dim); font-style: italic; font-weight: 500; }

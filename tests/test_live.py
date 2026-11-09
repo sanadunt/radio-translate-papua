@@ -125,6 +125,54 @@ class LiveSessionTest(unittest.TestCase):
         session.wait_finished(5)
 
 
+class TwoStageTest(unittest.TestCase):
+    """Teks Papua tampil sebelum terjemahan selesai; Whisper ucapan berikutnya jalan selagi menerjemahkan."""
+
+    def test_papua_text_first_then_translation(self):
+        gate = threading.Event()
+        session = LiveSession()
+        translate = lambda result, ctx: gate.wait(5) and {"text_indonesia": result["text_papua"].upper()}
+        session.start(fake_capture(["a"]), lambda s, r, c: {"text_papua": s, "_audio": "besar"}, translate=translate)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and not session.snapshot()["items"]:
+            time.sleep(0.02)
+        first = session.snapshot()["items"][0]
+        self.assertTrue(first["pending"])
+        self.assertEqual(first["text_papua"], "a")
+        self.assertNotIn("_audio", first)
+        gate.set()
+        session.stop()
+        self.assertTrue(session.wait_finished(5))
+        updated = session.snapshot(after=first["rev"])["items"]
+        self.assertEqual([(i["id"], i["text_indonesia"], i["pending"]) for i in updated], [(first["id"], "A", False)])
+        self.assertIsNotNone(updated[0]["mt_sec"])
+
+    def test_next_transcription_overlaps_translation(self):
+        events = []
+
+        def process(seg, sr, ctx):
+            events.append(("stt-start", seg, time.monotonic()))
+            time.sleep(0.2)
+            return {"text_papua": seg}
+
+        def translate(result, ctx):
+            events.append(("mt-start", result["text_papua"], time.monotonic()))
+            time.sleep(0.6)
+            events.append(("mt-end", result["text_papua"], time.monotonic()))
+            return {"text_indonesia": result["text_papua"]}
+        session = LiveSession()
+        session.start(fake_capture(["1", "2", "3"]), process, translate=translate)
+        time.sleep(0.3)
+        session.stop()
+        self.assertTrue(session.wait_finished(10))
+        at = {(kind, seg): t for kind, seg, t in events}
+        self.assertLess(at[("stt-start", "2")], at[("mt-end", "1")])  # tumpang tindih
+        snap = session.snapshot()
+        self.assertEqual(snap["stats"]["done"], 3)
+        self.assertEqual([i["text_indonesia"] for i in snap["items"]], ["1", "2", "3"])
+        self.assertFalse(snap["running"])
+
+
 class LiveEndpointTest(unittest.TestCase):
     """Ujung ke ujung tanpa model AI: Radio V2 simulasi (PTT 3 dtk nyala / 3 dtk mati)."""
 
@@ -170,16 +218,19 @@ class LiveEndpointTest(unittest.TestCase):
             items = []
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline and not items:
-                items = [i for i in http.get("/live/status?after=0").get_json()["items"] if not i.get("error")]
+                items = [i for i in http.get("/live/status?after=0").get_json()["items"]
+                         if not i.get("error") and not i.get("pending")]
                 time.sleep(0.3)
             self.assertTrue(items, "tidak ada ucapan yang diterjemahkan dari radio simulasi")
             first = items[0]
             self.assertTrue(first["text_papua"].startswith("[TANPA MODEL] Audio"), first)
             self.assertEqual(first["freq_hz"], 155_700_000)
             self.assertEqual(core.records.get(first["record_id"])["segments"], 1)
+            self.assertTrue(first["text_indonesia"].startswith("[TANPA MODEL]"), first)
+            self.assertNotIn("_audio", first)
 
-            status = http.get(f"/live/status?after={first['id']}").get_json()
-            self.assertTrue(all(i["id"] > first["id"] for i in status["items"]))
+            status = http.get(f"/live/status?after={first['rev']}").get_json()
+            self.assertTrue(all(i["rev"] > first["rev"] for i in status["items"]))
             self.assertEqual(status["models"]["state"], "off")
         finally:
             http.post("/live/stop")

@@ -211,10 +211,14 @@ _ensure_venv_and_reexec()
 # IMPORTS UTAMA & KONST
 # ======================
 import io
+import contextlib
+import json
 import mimetypes
 import re
 import base64
 import hashlib
+import shutil
+import tempfile
 import socket
 import struct
 import threading
@@ -826,6 +830,56 @@ def gpu_total_vram_gb() -> float:
     return _gpu_vram_gb
 
 
+# Mesin terjemahan: "auto" = CTranslate2 (sama dengan faster-whisper; 2–4x lebih
+# cepat dari transformers.generate dan bisa satu batch) bila paket ctranslate2 ada.
+# Model best_bleu_* dikonversi otomatis sekali ke folder <model>-ct2 di sebelahnya;
+# selama konversi (atau bila gagal) terjemahan tetap lewat transformers.
+MT_BACKEND = os.environ.get("YALI_MT_BACKEND", "auto").strip().lower()
+
+
+def mt_ct2_dir(model_dir) -> Path:
+    model_dir = Path(model_dir).resolve()
+    return model_dir.with_name(model_dir.name + "-ct2")
+
+
+def model_signature(model_dir) -> str:
+    """Sidik folder model (nama, ukuran, waktu ubah file) untuk tahu hasil konversi masih cocok."""
+    digest = hashlib.sha256()
+    root = Path(model_dir)
+    for path in sorted(root.rglob("*")):
+        if path.is_file():
+            stat = path.stat()
+            digest.update(f"{path.relative_to(root)}|{stat.st_size}|{int(stat.st_mtime)}\n".encode())
+    return digest.hexdigest()
+
+
+def ct2_available() -> bool:
+    if MT_BACKEND == "transformers":
+        return False
+    try:
+        import ctranslate2  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def ct2_device_compute():
+    import ctranslate2
+    if ctranslate2.get_cuda_device_count() > 0:
+        return "cuda", os.environ.get("YALI_MT_COMPUTE", "int8_float16")
+    return "cpu", os.environ.get("YALI_MT_COMPUTE_CPU", "int8")
+
+
+def gpu_name() -> Optional[str]:
+    try:
+        torch = torch_env.ensure_torch()
+        if torch.cuda.is_available():
+            return torch.cuda.get_device_name(0)
+    except Exception:
+        pass
+    return None
+
+
 def should_swap_models_for_vram() -> bool:
     """
     Swap Whisper<->MT (lepas-muat ulang dari disk) HANYA masuk akal kalau
@@ -908,6 +962,16 @@ class PipelineService:
         # /record-radio bersamaan. Ini mencegah "device busy" dan bentrok VRAM.
         self.record_lock = threading.Lock()
         self.model_lock = threading.RLock()
+        # Whisper & terjemahan punya kunci sendiri supaya bisa jalan bersamaan di GPU
+        # (Mode Live: ucapan berikutnya ditranskrip selagi yang sebelumnya
+        # diterjemahkan). model_lock dipakai ganti bahasa dan mode hemat VRAM
+        # (model bergantian). Urutan ambil kunci selalu model -> stt -> mt.
+        self.stt_lock = threading.Lock()
+        self.mt_lock = threading.Lock()
+        self._mt_ct2 = None              # ctranslate2.Translator bila sudah siap
+        self.mt_backend: Optional[str] = None
+        self.stt_backend: Optional[str] = None
+        self._mt_convert_started: set = set()
 
         # Di-set true dari endpoint /record-radio/stop supaya rekaman yang
         # sedang berjalan berhenti SECEPATNYA (dicek tiap blok audio di
@@ -966,12 +1030,14 @@ class PipelineService:
         Lepas model MT/best_bleu dari GPU agar VRAM cukup untuk Whisper.
         Tokenizer tetap disimpan karena kecil.
         """
-        if self._mdl_yali_id is not None:
+        if self._mdl_yali_id is not None or self._mt_ct2 is not None:
             try:
-                self._mdl_yali_id.to("cpu")
+                if self._mdl_yali_id is not None:
+                    self._mdl_yali_id.to("cpu")
             except Exception:
                 pass
             self._mdl_yali_id = None
+            self._mt_ct2 = None
             print("[VRAM] MT model dilepas dari GPU.", file=sys.stderr)
             clear_torch_memory()
 
@@ -1053,7 +1119,7 @@ class PipelineService:
             print(f"[LANG] Bahasa Papua sudah aktif: '{lang}' (tidak ada perubahan).", file=sys.stderr)
             return {"ok": True, "lang": lang, "changed": False}
 
-        with self.model_lock:
+        with self.model_lock, self.stt_lock, self.mt_lock:
             self.model_dir_radio = whisper_dir
             self.model_dir_upload = whisper_dir
             self.model_dir_mt = mt_dir
@@ -1064,6 +1130,8 @@ class PipelineService:
             self._whisper_model_upload = None
             self._tok_yali_id = None
             self._mdl_yali_id = None
+            self._mt_ct2 = None
+            self.mt_backend = None
             self._mt_forced_bos_token_id = None
             if not NO_MODEL_MODE:
                 self.models_state = "idle"
@@ -1449,6 +1517,7 @@ class PipelineService:
                     device=device,
                     compute_type=compute_type,
                 )
+            self.stt_backend = f"faster-whisper ({device}, {compute_type})"
 
             clear_torch_memory()
 
@@ -1480,6 +1549,24 @@ class PipelineService:
             clear_torch_memory()
 
 
+    @contextlib.contextmanager
+    def _model_section(self, lock):
+        """Kunci untuk satu inferensi. Mode hemat VRAM: semua model bergantian
+        (model_lock); selain itu Whisper dan terjemahan boleh jalan bersamaan."""
+        if should_swap_models_for_vram():
+            with self.model_lock, lock:
+                yield
+        else:
+            with lock:
+                yield
+
+    @staticmethod
+    def _after_inference():
+        # Membersihkan cache GPU + gc.collect() tiap panggilan memakan ratusan ms dan
+        # memaksa alokasi ulang; hanya perlu saat model bergantian di GPU kecil.
+        if should_swap_models_for_vram():
+            clear_torch_memory()
+
     @staticmethod
     def _no_model_transcript(audio16) -> str:
         duration = len(audio16) / float(TARGET_SR)
@@ -1488,7 +1575,7 @@ class PipelineService:
     def whisper_transcribe_radio(self, audio16):
         if NO_MODEL_MODE:
             return self._no_model_transcript(audio16)
-        with self.model_lock:
+        with self._model_section(self.stt_lock):
             self._ensure_whisper_radio()
             segments, info = self._whisper_model_radio.transcribe(
                 audio16,
@@ -1510,13 +1597,13 @@ class PipelineService:
                 condition_on_previous_text=False,
             )
             text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
-            clear_torch_memory()
+            self._after_inference()
             return text
 
     def whisper_transcribe_upload(self, audio16):
         if NO_MODEL_MODE:
             return self._no_model_transcript(audio16)
-        with self.model_lock:
+        with self._model_section(self.stt_lock):
             self._ensure_whisper_upload()
             segments, info = self._whisper_model_upload.transcribe(
                 audio16,
@@ -1528,7 +1615,7 @@ class PipelineService:
                 condition_on_previous_text=False,
             )
             text = " ".join(seg.text.strip() for seg in segments if seg.text.strip())
-            clear_torch_memory()
+            self._after_inference()
             return text
 
 
@@ -1542,118 +1629,236 @@ class PipelineService:
             transformers, "AutoModelForSeq2SeqLM"
         )
 
-        if self._tok_yali_id is None or self._mdl_yali_id is None:
+        if self._tok_yali_id is not None and (self._mdl_yali_id is not None or self._mt_ct2 is not None):
+            return
+        if should_swap_models_for_vram():
             # Mode hemat VRAM: sebelum load MT ke GPU, kosongkan Whisper dari GPU
-            if should_swap_models_for_vram():
-                self._unload_whisper_models()
+            self._unload_whisper_models()
+        if self._load_mt_ct2(self.model_dir_mt):
+            return
+        dtype = cuda_model_dtype()
+        print(f"[MT] Loading best_bleu MT model to {torch_env.device} dtype={dtype} …", file=sys.stderr)
+        model_dir = str(Path(self.model_dir_mt).resolve())
 
-            dtype = cuda_model_dtype()
-            print(f"[MT] Loading best_bleu MT model to {torch_env.device} dtype={dtype} …", file=sys.stderr)
-            model_dir = str(Path(self.model_dir_mt).resolve())
+        config_path = Path(model_dir) / "config.json"
+        adapter_config_path = Path(model_dir) / "adapter_config.json"
 
-            config_path = Path(model_dir) / "config.json"
-            adapter_config_path = Path(model_dir) / "adapter_config.json"
+        if config_path.exists():
+            # Folder berisi model utuh (bukan adapter LoRA/PEFT).
+            _ = AutoConfig.from_pretrained(model_dir, local_files_only=True)
+            tok = AutoTokenizer.from_pretrained(
+                model_dir, use_fast=True, local_files_only=True
+            )
+            mdl = AutoModelForSeq2SeqLM.from_pretrained(
+                model_dir,
+                local_files_only=True,
+                torch_dtype=dtype,
+                low_cpu_mem_usage=True,
+            ).to(torch_env.device).eval()
 
-            if config_path.exists():
-                # Folder berisi model utuh (bukan adapter LoRA/PEFT).
-                _ = AutoConfig.from_pretrained(model_dir, local_files_only=True)
-                tok = AutoTokenizer.from_pretrained(
-                    model_dir, use_fast=True, local_files_only=True
-                )
-                mdl = AutoModelForSeq2SeqLM.from_pretrained(
-                    model_dir,
-                    local_files_only=True,
-                    torch_dtype=dtype,
-                    low_cpu_mem_usage=True,
-                ).to(torch_env.device).eval()
+        elif adapter_config_path.exists():
+            # PENTING: folder ini adalah hasil fine-tuning LoRA/PEFT
+            # (isinya cuma adapter_config.json + adapter_model.safetensors,
+            # dsb -- lihat README di folder itu). Folder semacam ini TIDAK
+            # punya config.json sendiri, jadi tidak bisa langsung dibuka
+            # dengan AutoModelForSeq2SeqLM.from_pretrained(model_dir) --
+            # itulah sumber error "Unrecognized model ... Should have a
+            # `model_type` key in its config.json". Model dasarnya harus
+            # dimuat dulu (dari 'base_model_name_or_path' di dalam
+            # adapter_config.json), baru adapter LoRA-nya dipasang di atas.
+            import json
 
-            elif adapter_config_path.exists():
-                # PENTING: folder ini adalah hasil fine-tuning LoRA/PEFT
-                # (isinya cuma adapter_config.json + adapter_model.safetensors,
-                # dsb -- lihat README di folder itu). Folder semacam ini TIDAK
-                # punya config.json sendiri, jadi tidak bisa langsung dibuka
-                # dengan AutoModelForSeq2SeqLM.from_pretrained(model_dir) --
-                # itulah sumber error "Unrecognized model ... Should have a
-                # `model_type` key in its config.json". Model dasarnya harus
-                # dimuat dulu (dari 'base_model_name_or_path' di dalam
-                # adapter_config.json), baru adapter LoRA-nya dipasang di atas.
-                import json
-
-                with open(adapter_config_path, "r", encoding="utf-8") as f:
-                    adapter_cfg = json.load(f)
-                base_model_name = adapter_cfg.get("base_model_name_or_path")
-                if not base_model_name:
-                    raise RuntimeError(
-                        f"'{adapter_config_path}' tidak punya field "
-                        "'base_model_name_or_path', jadi base model untuk "
-                        "adapter LoRA ini tidak diketahui."
-                    )
-
-                peft = torch_env.ensure_peft()
-                PeftModel = getattr(peft, "PeftModel")
-
-                print(
-                    f"[MT] '{model_dir}' adalah adapter LoRA/PEFT -> "
-                    f"memuat base model '{base_model_name}' dahulu…",
-                    file=sys.stderr,
-                )
-
-                # Tokenizer: pakai yang disimpan bersama adapter (folder
-                # 'tokenizer'/'tokenizer_config' di checkpoint) kalau ada,
-                # kalau tidak fallback ke tokenizer base model.
-                try:
-                    tok = AutoTokenizer.from_pretrained(model_dir, use_fast=True)
-                except Exception:
-                    tok = AutoTokenizer.from_pretrained(base_model_name, use_fast=True)
-
-                base_mdl = AutoModelForSeq2SeqLM.from_pretrained(
-                    base_model_name,
-                    torch_dtype=dtype,
-                    low_cpu_mem_usage=True,
-                )
-                mdl = PeftModel.from_pretrained(base_mdl, model_dir)
-                # Gabungkan bobot adapter ke base model supaya inference
-                # secepat model biasa (tidak perlu hitung LoRA tiap forward).
-                mdl = mdl.merge_and_unload()
-                mdl = mdl.to(torch_env.device).eval()
-
-            else:
+            with open(adapter_config_path, "r", encoding="utf-8") as f:
+                adapter_cfg = json.load(f)
+            base_model_name = adapter_cfg.get("base_model_name_or_path")
+            if not base_model_name:
                 raise RuntimeError(
-                    f"Folder model MT '{model_dir}' tidak berisi config.json "
-                    "maupun adapter_config.json, jadi bukan folder model "
-                    "(atau checkpoint LoRA) yang valid."
+                    f"'{adapter_config_path}' tidak punya field "
+                    "'base_model_name_or_path', jadi base model untuk "
+                    "adapter LoRA ini tidak diketahui."
                 )
 
-            # ---- Paksa kode bahasa mBART-50 (src & target) ----
-            # Tanpa ini, model multibahasa mBART-50 bisa memilih bahasa
-            # keluaran yang salah (lihat catatan di MT_SRC_LANG_CODE /
-            # MT_TGT_LANG_CODE di atas).
-            src_code = MT_SRC_LANG_CODE.get(self.current_lang, "id_ID")
-            if hasattr(tok, "src_lang"):
-                try:
-                    tok.src_lang = src_code
-                except Exception as exc:
-                    print(f"[MT] Gagal set tok.src_lang='{src_code}': {exc}", file=sys.stderr)
+            peft = torch_env.ensure_peft()
+            PeftModel = getattr(peft, "PeftModel")
 
-            forced_bos_token_id = None
-            lang_code_to_id = getattr(tok, "lang_code_to_id", None)
-            if lang_code_to_id and MT_TGT_LANG_CODE in lang_code_to_id:
-                forced_bos_token_id = lang_code_to_id[MT_TGT_LANG_CODE]
-            else:
-                print(
-                    f"[MT] PERINGATAN: kode bahasa target '{MT_TGT_LANG_CODE}' "
-                    "tidak ditemukan di tokenizer.lang_code_to_id -- "
-                    "forced_bos_token_id tidak di-set, terjemahan bisa "
-                    "salah bahasa. Cek MT_TGT_LANG_CODE / tokenizer_config.json.",
-                    file=sys.stderr,
-                )
-            self._mt_forced_bos_token_id = forced_bos_token_id
+            print(
+                f"[MT] '{model_dir}' adalah adapter LoRA/PEFT -> "
+                f"memuat base model '{base_model_name}' dahulu…",
+                file=sys.stderr,
+            )
 
-            if tok.pad_token is None:
-                tok.pad_token = tok.eos_token or tok.bos_token
-                mdl.config.pad_token_id = tok.pad_token_id
-            self._tok_yali_id, self._mdl_yali_id = tok, mdl
-            clear_torch_memory()
+            # Tokenizer: pakai yang disimpan bersama adapter (folder
+            # 'tokenizer'/'tokenizer_config' di checkpoint) kalau ada,
+            # kalau tidak fallback ke tokenizer base model.
+            try:
+                tok = AutoTokenizer.from_pretrained(model_dir, use_fast=True)
+            except Exception:
+                tok = AutoTokenizer.from_pretrained(base_model_name, use_fast=True)
+
+            base_mdl = AutoModelForSeq2SeqLM.from_pretrained(
+                base_model_name,
+                torch_dtype=dtype,
+                low_cpu_mem_usage=True,
+            )
+            mdl = PeftModel.from_pretrained(base_mdl, model_dir)
+            # Gabungkan bobot adapter ke base model supaya inference
+            # secepat model biasa (tidak perlu hitung LoRA tiap forward).
+            mdl = mdl.merge_and_unload()
+            mdl = mdl.to(torch_env.device).eval()
+
+        else:
+            raise RuntimeError(
+                f"Folder model MT '{model_dir}' tidak berisi config.json "
+                "maupun adapter_config.json, jadi bukan folder model "
+                "(atau checkpoint LoRA) yang valid."
+            )
+
+        self._mt_forced_bos_token_id = self._setup_mt_tokenizer(tok)
+
+        if tok.pad_token is None:
+            tok.pad_token = tok.eos_token or tok.bos_token
+            mdl.config.pad_token_id = tok.pad_token_id
+        self._tok_yali_id, self._mdl_yali_id = tok, mdl
+        self.mt_backend = f"transformers ({torch_env.device})"
+        clear_torch_memory()
+        self._start_mt_ct2_conversion(model_dir, tok, mdl, adapter_config_path.exists() and not config_path.exists())
+
+    def _setup_mt_tokenizer(self, tok):
+        """Paksa kode bahasa mBART-50 (src & target); kembalikan id token target."""
+        # Tanpa ini, model multibahasa mBART-50 bisa memilih bahasa
+        # keluaran yang salah (lihat catatan di MT_SRC_LANG_CODE /
+        # MT_TGT_LANG_CODE di atas).
+        src_code = MT_SRC_LANG_CODE.get(self.current_lang, "id_ID")
+        if hasattr(tok, "src_lang"):
+            try:
+                tok.src_lang = src_code
+            except Exception as exc:
+                print(f"[MT] Gagal set tok.src_lang='{src_code}': {exc}", file=sys.stderr)
+
+        forced_bos_token_id = None
+        lang_code_to_id = getattr(tok, "lang_code_to_id", None)
+        if lang_code_to_id and MT_TGT_LANG_CODE in lang_code_to_id:
+            forced_bos_token_id = lang_code_to_id[MT_TGT_LANG_CODE]
+        elif tok.convert_tokens_to_ids(MT_TGT_LANG_CODE) not in (None, tok.unk_token_id):
+            forced_bos_token_id = tok.convert_tokens_to_ids(MT_TGT_LANG_CODE)
+        else:
+            print(
+                f"[MT] PERINGATAN: kode bahasa target '{MT_TGT_LANG_CODE}' "
+                "tidak ditemukan di tokenizer.lang_code_to_id -- "
+                "forced_bos_token_id tidak di-set, terjemahan bisa "
+                "salah bahasa. Cek MT_TGT_LANG_CODE / tokenizer_config.json.",
+                file=sys.stderr,
+            )
+        return forced_bos_token_id
+
+    # ---------- MT lewat CTranslate2 ----------
+    def _load_mt_ct2(self, model_dir) -> bool:
+        """Pakai hasil konversi CTranslate2 bila ada dan masih cocok dengan folder model."""
+        if not ct2_available():
+            return False
+        out = mt_ct2_dir(model_dir)
+        meta_path = out / "source.json"
+        if not (out / "model.bin").is_file() or not meta_path.is_file():
+            return False
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            if meta.get("signature") != model_signature(model_dir):
+                print(f"[MT] Folder model berubah sejak dikonversi; {out.name} dibuat ulang.", file=sys.stderr)
+                return False
+            import ctranslate2
+            transformers = torch_env.ensure_transformers()
+            tok = transformers.AutoTokenizer.from_pretrained(str(out / "tokenizer"), use_fast=True)
+            forced_bos = self._setup_mt_tokenizer(tok)
+            device, compute_type = ct2_device_compute()
+            started = time.monotonic()
+            translator = ctranslate2.Translator(str(out), device=device, compute_type=compute_type)
+        except Exception as exc:
+            print(f"[MT] Gagal memuat {out.name}, memakai transformers: {exc}", file=sys.stderr)
+            return False
+        self._tok_yali_id, self._mt_ct2, self._mt_forced_bos_token_id = tok, translator, forced_bos
+        self._mdl_yali_id = None
+        self.mt_backend = f"CTranslate2 ({device}, {compute_type})"
+        print(f"[MT] {out.name} dimuat dalam {time.monotonic() - started:.1f} dtk: {self.mt_backend}.", file=sys.stderr)
+        return True
+
+    def _start_mt_ct2_conversion(self, model_dir, tok, mdl, is_lora):
+        if not ct2_available() or model_dir in self._mt_convert_started:
+            return
+        self._mt_convert_started.add(model_dir)
+        threading.Thread(target=self._convert_mt_ct2, args=(model_dir, tok, mdl, is_lora),
+                         name="mt-ct2-convert", daemon=True).start()
+
+    def _convert_mt_ct2(self, model_dir, tok, mdl, is_lora):
+        """Konversi sekali (di background, CPU) lalu ganti ke CTranslate2 tanpa menghentikan terjemahan."""
+        import ctranslate2
+        out = mt_ct2_dir(model_dir)
+        tmp = out.with_name(out.name + ".tmp")
+        started = time.monotonic()
+        print(f"[MT] Mengonversi {Path(model_dir).name} ke CTranslate2 (sekali saja)…", file=sys.stderr)
+        try:
+            shutil.rmtree(tmp, ignore_errors=True)
+            with tempfile.TemporaryDirectory(prefix="mt-merged-", dir=str(out.parent)) as merged:
+                source = model_dir
+                if is_lora:
+                    # Adapter LoRA sudah digabung ke model dasar saat dimuat; simpan gabungannya.
+                    mdl.save_pretrained(merged, safe_serialization=True)
+                    tok.save_pretrained(merged)
+                    source = merged
+                # ctranslate2 membaca config.normalize_before, yang tidak lagi selalu ada di
+                # MBartConfig transformers 5.x. mBART selalu pre-norm, jadi nilai bawaannya True
+                # (config yang menyimpan nilainya sendiri tetap memakai nilai itu).
+                transformers = torch_env.ensure_transformers()
+                if not hasattr(transformers.MBartConfig, "normalize_before"):
+                    transformers.MBartConfig.normalize_before = True
+                converter = ctranslate2.converters.TransformersConverter(str(source), load_as_float16=True)
+                converter.convert(str(tmp), quantization="float16", force=True)
+            # mBART-50 memulai decoder dengan </s> lalu kode bahasa target (seperti
+            # generate() di transformers). Tanpa "tokenizer_class" di config, konverter
+            # mengira mBART-25 dan tidak memakai </s>; perbaiki di config CTranslate2.
+            ct2_config_path = tmp / "config.json"
+            ct2_config = json.loads(ct2_config_path.read_text(encoding="utf-8"))
+            if ct2_config.get("decoder_start_token") is None and "MBart50" in type(tok).__name__:
+                ct2_config["decoder_start_token"] = tok.eos_token
+                ct2_config_path.write_text(json.dumps(ct2_config, indent=2), encoding="utf-8")
+            tok.save_pretrained(str(tmp / "tokenizer"))
+            (tmp / "source.json").write_text(json.dumps({
+                "source": str(model_dir),
+                "signature": model_signature(model_dir),
+                "ctranslate2": ctranslate2.__version__,
+            }, indent=1), encoding="utf-8")
+            shutil.rmtree(out, ignore_errors=True)
+            tmp.rename(out)
+        except Exception as exc:
+            shutil.rmtree(tmp, ignore_errors=True)
+            print(f"[MT] Konversi CTranslate2 gagal, terjemahan tetap lewat transformers: {exc}", file=sys.stderr)
+            return
+        print(f"[MT] Konversi selesai dalam {time.monotonic() - started:.0f} dtk -> {out}", file=sys.stderr)
+        mdl = None  # referensi ke model transformers dilepas supaya VRAM-nya bisa bebas
+        with self._model_section(self.mt_lock):
+            if str(Path(self.model_dir_mt).resolve()) != model_dir or self._mt_ct2 is not None:
+                return
+            if self._load_mt_ct2(model_dir):
+                clear_torch_memory()  # model transformers yang lama dilepas dari GPU
+
+    def _mt_translate_batch(self, texts: List[str]) -> List[str]:
+        """Terjemahkan beberapa potongan sekaligus (CTranslate2) atau satu per satu (transformers)."""
+        if self._mt_ct2 is None:
+            return [self._yali_to_id_single(text) for text in texts]
+        tok = self._tok_yali_id
+        sources = [tok.convert_ids_to_tokens(tok(text, truncation=True, max_length=192)["input_ids"]) for text in texts]
+        target = tok.convert_ids_to_tokens(self._mt_forced_bos_token_id) if self._mt_forced_bos_token_id is not None else MT_TGT_LANG_CODE
+        results = self._mt_ct2.translate_batch(
+            sources,
+            target_prefix=[[target]] * len(sources),
+            beam_size=MT_NUM_BEAMS,
+            # = max_new_tokens=128 di generate(): token bahasa + 126 token + </s> paksa di batas.
+            max_decoding_length=127,
+            max_batch_size=16,
+        )
+        return [
+            tok.decode(tok.convert_tokens_to_ids(result.hypotheses[0][1:]), skip_special_tokens=True).strip()
+            for result in results
+        ]
 
     def _yali_to_id_single(self, text: str) -> str:
         torch = torch_env.ensure_torch()
@@ -1696,7 +1901,7 @@ class PipelineService:
         out = tok.batch_decode(gen_ids, skip_special_tokens=True)[0]
 
         del enc, gen_ids
-        clear_torch_memory()
+        self._after_inference()
         return out
 
     def yali_to_id_segments_bestbleu(self, text: str) -> str:
@@ -1707,7 +1912,7 @@ class PipelineService:
             # Teks Whisper versi tanpa model sudah berawalan penanda; jangan dobel.
             return text if text.startswith("[TANPA MODEL]") else f"[TANPA MODEL] {text}"
 
-        with self.model_lock:
+        with self._model_section(self.mt_lock):
             original = text
             raw_segments = text.split(".")
             segments = [seg.strip() for seg in raw_segments if seg.strip()]
@@ -1715,20 +1920,24 @@ class PipelineService:
                 return ""
 
             self._ensure_yali_id()
-            translated_segments: List[str] = []
-            for seg in segments:
-                try:
-                    sub_chunks = split_text_into_chunks(seg, CHUNK_MAX_WORDS, CHUNK_OVERLAP)
-                    out_sub = []
-                    for ch in sub_chunks:
-                        ch = ch.strip()
-                        if ch:
-                            out_sub.append(self._yali_to_id_single(ch))
-                    seg_id = " ".join(out_sub).strip()
-                    if seg_id:
-                        translated_segments.append(seg_id)
-                except Exception as exc:
-                    print(f"[MT] Gagal menerjemahkan segmen: {exc}", file=sys.stderr)
+            # Semua potongan dikumpulkan lalu diterjemahkan sekali jalan (satu batch di
+            # CTranslate2), kemudian disusun lagi per kalimat.
+            chunk_owner: List[int] = []
+            chunks: List[str] = []
+            for idx, seg in enumerate(segments):
+                for ch in split_text_into_chunks(seg, CHUNK_MAX_WORDS, CHUNK_OVERLAP):
+                    if ch.strip():
+                        chunk_owner.append(idx)
+                        chunks.append(ch.strip())
+            try:
+                outputs = self._mt_translate_batch(chunks)
+            except Exception as exc:
+                print(f"[MT] Gagal menerjemahkan: {exc}", file=sys.stderr)
+                return ""
+            per_segment: List[List[str]] = [[] for _ in segments]
+            for idx, out_text in zip(chunk_owner, outputs):
+                per_segment[idx].append(out_text)
+            translated_segments = [" ".join(parts).strip() for parts in per_segment if " ".join(parts).strip()]
 
             if not translated_segments:
                 return ""
@@ -1747,8 +1956,8 @@ class PipelineService:
         started = time.monotonic()
         self.models_state = "loading"
         try:
-            with self.model_lock:
-                lang = self.current_lang
+            lang = self.current_lang
+            with self._model_section(self.stt_lock):
                 self._ensure_whisper_radio()
                 segments, _ = self._whisper_model_radio.transcribe(
                     np.zeros(TARGET_SR, dtype=np.float32),
@@ -1758,15 +1967,17 @@ class PipelineService:
                     condition_on_previous_text=False,
                 )
                 list(segments)
-                if not should_swap_models_for_vram():
+            if not should_swap_models_for_vram():
+                with self._model_section(self.mt_lock):
                     self._ensure_yali_id()
-                    self._yali_to_id_single("halo")
+                    self._mt_translate_batch(["halo"])
             self.models_state = "ready"
             self.models_error = None
             print(
                 f"[INIT] Model '{lang}' siap dalam {time.monotonic() - started:.1f} dtk "
-                f"(device={torch_env.device}, VRAM={gpu_total_vram_gb():.1f} GB, "
-                f"model bergantian={'ya' if should_swap_models_for_vram() else 'tidak'}).",
+                f"(device={torch_env.device}, GPU={gpu_name() or '-'}, VRAM={gpu_total_vram_gb():.1f} GB, "
+                f"model bergantian={'ya' if should_swap_models_for_vram() else 'tidak'}; "
+                f"STT={self.stt_backend}, terjemahan={self.mt_backend}).",
                 file=sys.stderr,
             )
         except Exception as exc:
@@ -3151,8 +3362,11 @@ LIVE_LISTEN_SECONDS = 10 ** 8  # praktis tanpa batas; berhenti lewat /live/stop
 LIVE_MIN_SECONDS = float(os.environ.get("YALI_LIVE_MIN_SECONDS", "0.6"))
 
 
-def _live_process(radio_name, radio, dev_index):
-    def process(segment, sr, context):
+def _live_stages(radio_name, radio, dev_index):
+    """Dua tahap Mode Live: (1) bersihkan + Whisper -> teks Papua langsung tampil,
+    (2) terjemahan + simpan WAV/database. Tahap 2 berjalan di thread sendiri, jadi
+    ucapan berikutnya sudah ditranskrip selagi ucapan ini diterjemahkan."""
+    def transcribe(segment, sr, context):
         segment = np.asarray(segment, dtype=np.float32).reshape(-1)
         if segment.size < LIVE_MIN_SECONDS * sr:
             return None
@@ -3160,28 +3374,33 @@ def _live_process(radio_name, radio, dev_index):
         if seg_clean is None:
             return None
         text_papua = remove_quotes(pipeline.whisper_transcribe_radio(whisper_input_16k(seg_clean, int(sr))).strip())
-        text_indonesia = pipeline.yali_to_id_segments_bestbleu(text_papua) if text_papua else ""
-        duration = seg_clean.size / float(sr)
-
-        pipeline.last_audio_clean = seg_clean.copy()
-        pipeline.last_audio_sr = int(sr)
-        pipeline.last_audio_updated_at = time.time()
-
         meta = recording_meta(context.get("meta"), radio_name, radio, dev_index)
-        saved_path = save_recording_wav(seg_clean, int(sr))
-        record_id = log_recording("terjemah", meta, saved_path, duration, sr, 1, text_papua, text_indonesia)
-        print(f"[LIVE] Ucapan {duration:.1f} dtk: {text_papua!r} -> {text_indonesia!r}", file=sys.stderr)
         return {
             "text_papua": text_papua,
-            "text_indonesia": text_indonesia,
-            "record_id": record_id,
-            "duration_sec": round(duration, 2),
+            "duration_sec": round(seg_clean.size / float(sr), 2),
             "lang": pipeline.current_lang,
             "source": meta.get("source"),
             "freq_hz": meta.get("freq_hz"),
             "mode": meta.get("mode"),
+            "_audio": seg_clean,
+            "_sr": int(sr),
+            "_meta": meta,
         }
-    return process
+
+    def translate(result, context):
+        text_papua = result["text_papua"]
+        text_indonesia = pipeline.yali_to_id_segments_bestbleu(text_papua) if text_papua else ""
+        audio, sr = result["_audio"], result["_sr"]
+        pipeline.last_audio_clean = audio.copy()
+        pipeline.last_audio_sr = sr
+        pipeline.last_audio_updated_at = time.time()
+        saved_path = save_recording_wav(audio, sr)
+        record_id = log_recording("terjemah", result["_meta"], saved_path, result["duration_sec"], sr, 1,
+                                  text_papua, text_indonesia)
+        print(f"[LIVE] Ucapan {result['duration_sec']:.1f} dtk: {text_papua!r} -> {text_indonesia!r}", file=sys.stderr)
+        return {"text_indonesia": text_indonesia, "record_id": record_id}
+
+    return transcribe, translate
 
 
 def _live_finished():
@@ -3239,7 +3458,8 @@ def live_start():
 
         info = {"source": source, "device_index": dev_index, "lang": pipeline.current_lang,
                 "meta": data.get("meta") if isinstance(data.get("meta"), dict) else {}}
-        started = live.start(capture, _live_process(radio_name, radio, dev_index), info, on_finish=_live_finished)
+        transcribe, translate = _live_stages(radio_name, radio, dev_index)
+        started = live.start(capture, transcribe, info, on_finish=_live_finished, translate=translate)
         if not started:
             return jsonify({"ok": False, "busy": True, "error": "Sesi Live sebelumnya masih ditutup; coba lagi."}), 200
         print(f"[LIVE] Mulai mendengarkan {source} (bahasa {pipeline.current_lang}).", file=sys.stderr)
@@ -3263,6 +3483,19 @@ def live_meta():
     return jsonify({"ok": True})
 
 
+_gpu_label_cache: dict = {}
+
+
+def _gpu_label() -> Optional[str]:
+    # Nama GPU baru dibaca setelah torch dimuat (bukan dari /live/status pertama kali
+    # di mode tanpa model, yang tidak boleh memuat torch).
+    if NO_MODEL_MODE or torch_env.device is None:
+        return None
+    if "name" not in _gpu_label_cache:
+        _gpu_label_cache["name"] = gpu_name()
+    return _gpu_label_cache["name"]
+
+
 @app.route("/live/status", methods=["GET"])
 def live_status():
     try:
@@ -3279,6 +3512,9 @@ def live_status():
             "error": pipeline.models_error,
             "no_model": bool(NO_MODEL_MODE),
             "device": str(torch_env.device) if torch_env.device is not None else None,
+            "gpu": _gpu_label(),
+            "stt": pipeline.stt_backend,
+            "mt": pipeline.mt_backend,
         },
     })
 

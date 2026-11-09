@@ -3547,7 +3547,8 @@
 
   let liveRunning = false;
   let liveStopping = false;
-  let liveLastId = 0;
+  let liveLastRev = 0;                // item baru maupun yang baru dilengkapi punya rev lebih besar
+  const liveCards = new Map();       // id item -> kartu, supaya terjemahan mengisi kartu yang sama
   let livePollTimer = null;
   let liveViaWebusb = false;
   let liveMetaSent = '';
@@ -3633,15 +3634,20 @@
     return Number(value).toLocaleString('id-ID', { minimumFractionDigits: digits, maximumFractionDigits: digits });
   }
 
+  // Kartu baru dibuat saat teks Papua siap (pending), lalu diisi ulang di tempat
+  // yang sama begitu terjemahannya selesai.
   function renderLiveItem(item){
+    const existing = liveCards.get(item.id);
     const card = document.createElement('article');
-    card.className = 'live-card' + (item.error ? ' is-error' : '');
+    card.className = 'live-card' + (item.error ? ' is-error' : '') + (item.pending ? ' is-pending' : '');
     const head = document.createElement('div');
     head.className = 'live-card-head';
     const parts = [liveTime(item.at)];
     if (item.freq_hz) parts.push(`${formatMHzShort(item.freq_hz)} MHz`);
     if (item.mode) parts.push(item.mode);
     if (item.duration_sec) parts.push(`${liveNumber(item.duration_sec)} dtk`);
+    if (item.stt_sec != null) parts.push(`teks ${liveNumber(item.stt_sec)} dtk`);
+    if (item.mt_sec != null) parts.push(`terjemahan ${liveNumber(item.mt_sec)} dtk`);
     if (item.latency_sec != null) parts.push(`selesai ${liveNumber(item.latency_sec)} dtk setelah PTT`);
     const meta = document.createElement('span');
     meta.className = 'live-card-meta';
@@ -3679,15 +3685,22 @@
     } else {
       const indo = document.createElement('p');
       indo.className = 'live-card-id';
-      indo.textContent = item.text_indonesia || (item.text_papua ? '(terjemahan kosong)' : '(tidak ada ucapan yang dikenali)');
+      indo.textContent = item.pending ? 'Menerjemahkan…'
+        : item.text_indonesia || (item.text_papua ? '(terjemahan kosong)' : '(tidak ada ucapan yang dikenali)');
       const papua = document.createElement('p');
       papua.className = 'live-card-papua';
       papua.textContent = item.text_papua || '';
       card.append(indo, papua);
     }
     liveEmpty.hidden = true;
-    liveFeed.insertBefore(card, liveEmpty.nextSibling);  // terbaru paling atas
-    while (liveFeed.querySelectorAll('.live-card').length > 200) liveFeed.lastElementChild.remove();
+    if (existing && existing.isConnected) existing.replaceWith(card);
+    else liveFeed.insertBefore(card, liveEmpty.nextSibling);  // terbaru paling atas
+    liveCards.set(item.id, card);
+    while (liveFeed.querySelectorAll('.live-card').length > 200){
+      const last = liveFeed.lastElementChild;
+      for (const [id, el] of liveCards) if (el === last) liveCards.delete(id);
+      last.remove();
+    }
   }
 
   function setLiveButton(){
@@ -3701,22 +3714,26 @@
 
   function renderLiveStatus(data){
     const models = data.models || {};
+    const where = models.gpu || String(models.device || '').toUpperCase() || 'CPU';
     const modelText = models.no_model ? 'Tanpa model AI (teks penanda)'
-      : models.state === 'ready' ? `Model siap · ${String(models.device || '').toUpperCase() || 'CPU'}`
+      : models.state === 'ready' ? `Model siap · ${where}`
       : models.state === 'loading' ? 'Memuat model…'
       : models.state === 'error' ? 'Model gagal dimuat'
       : 'Model dimuat saat dibutuhkan';
     liveModelPill.textContent = modelText;
-    liveModelPill.title = models.error || '';
+    liveModelPill.title = models.error
+      || [models.stt && `Whisper: ${models.stt}`, models.mt && `Terjemahan: ${models.mt}`].filter(Boolean).join('\n');
     liveModelPill.classList.toggle('busy', models.state === 'loading');
 
+    // Mendengarkan/merekam dan memproses berjalan bersamaan: keduanya ditampilkan.
     let state = 'idle';
     let text = data.error ? `Berhenti: ${data.error}` : 'Belum berjalan';
     if (data.running){
-      if (data.stopping){ state = 'busy'; text = `Menyelesaikan ${data.queue + (data.processing ? 1 : 0)} ucapan terakhir…`; }
-      else if (data.phase === 'recording'){ state = 'recording'; text = 'Merekam ucapan…'; }
-      else if (data.processing){ state = 'busy'; text = data.queue ? `Menerjemahkan (${data.queue} menunggu)…` : 'Menerjemahkan…'; }
-      else { state = 'listening'; text = 'Mendengarkan · menunggu PTT'; }
+      const inFlight = (data.queue || 0) + (data.stt_busy ? 1 : 0) + (data.mt_busy ? 1 : 0);
+      const work = inFlight ? ` · ${inFlight} ucapan diproses` : '';
+      if (data.stopping){ state = 'busy'; text = `Menyelesaikan ${inFlight} ucapan terakhir…`; }
+      else if (data.phase === 'recording'){ state = 'recording'; text = `Merekam ucapan${work}`; }
+      else { state = inFlight ? 'busy' : 'listening'; text = `Mendengarkan${work || ' · menunggu PTT'}`; }
     }
     liveDot.dataset.state = state;
     liveStateText.textContent = text;
@@ -3726,20 +3743,23 @@
     const st = data.stats || {};
     liveStats.textContent = data.started_at
       ? `${st.done || 0} diterjemahkan dari ${st.heard || 0} ucapan` +
-        (st.last_latency_sec != null ? ` · terakhir ${liveNumber(st.last_latency_sec)} dtk` : '')
+        (st.last_latency_sec != null ? ` · terakhir ${liveNumber(st.last_latency_sec)} dtk` : '') +
+        (st.last_stt_sec != null && st.last_mt_sec != null
+          ? ` (Whisper ${liveNumber(st.last_stt_sec)} + terjemahan ${liveNumber(st.last_mt_sec)})` : '')
       : '';
   }
 
   async function pollLive(){
     try{
-      const res = await fetch(`${API_BASE}/live/status?after=${liveLastId}`);
+      const res = await fetch(`${API_BASE}/live/status?after=${liveLastRev}`);
       const data = await safeJson(res);
       if (!data.ok) return;
       for (const item of data.items){
-        liveLastId = Math.max(liveLastId, item.id);
+        liveLastRev = Math.max(liveLastRev, item.rev);
         renderLiveItem(item);
-        if (!item.error && item.record_id) recordsChanged();
-        if (!item.error && item.text_indonesia && liveAutoTts.checked) liveSpeak(item.text_indonesia);
+        if (item.pending || item.error) continue;
+        if (item.record_id) recordsChanged();
+        if (item.text_indonesia && liveAutoTts.checked) liveSpeak(item.text_indonesia);
       }
       const wasRunning = liveRunning;
       liveRunning = !!data.running;
@@ -3821,6 +3841,7 @@
   liveToggleBtn.addEventListener('click', () => (liveRunning ? stopLive() : startLive()));
   $('liveClearBtn').addEventListener('click', () => {
     liveFeed.querySelectorAll('.live-card').forEach((card) => card.remove());
+    liveCards.clear();
     liveEmpty.hidden = false;
   });
 

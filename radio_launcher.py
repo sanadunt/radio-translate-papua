@@ -65,6 +65,10 @@ CONFIG_TEMPLATE = """\
 # YALI_WHISPER_COMPUTE=int8_float16
 # 0 = model baru dimuat saat ucapan pertama, bukan saat aplikasi dibuka.
 # YALI_PRELOAD_MODELS=1
+# Mesin terjemahan: auto = CTranslate2 (model best_bleu_* dikonversi sekali ke folder
+# <model>-ct2, sekitar 1 menit, lalu dipakai terus); transformers = cara lama.
+# YALI_MT_BACKEND=auto
+# YALI_MT_COMPUTE=int8_float16
 # Mode Live: potongan suara lebih pendek dari ini (detik) tidak diterjemahkan.
 # YALI_LIVE_MIN_SECONDS=0.6
 
