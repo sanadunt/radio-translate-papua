@@ -1799,11 +1799,21 @@
     if (status && status.error) log(`Filter suara: ${status.error}`, 'warn');
   }
 
+  // Filter "nyala" = preset apa pun selain Mati (termasuk setelan sendiri).
+  function radioFilterOn(){
+    return !!radioFilterSettings && radioFilterSettings.preset !== 'off';
+  }
+
   function renderFilterNote(){
     const source = radioSourceSelect.value;
-    audioFilterNote.textContent = source === 'webusb'
-      ? 'Radio V2 di browser memutar suaranya sendiri di panel radio, jadi filter ini belum berlaku untuk sumber itu.'
-      : 'Hanya mengubah suara yang didengar. Rekaman dan Whisper tetap memakai suara asli.';
+    if (source !== 'webusb'){
+      audioFilterNote.textContent = 'Hanya mengubah suara yang didengar. Rekaman dan Whisper tetap memakai suara asli.';
+    } else if (radioFilterSettings && !radioFilterOn()){
+      audioFilterNote.textContent = 'Radio V2 di browser: filter mati, panel radio memutar suaranya sendiri (delay paling kecil).';
+    } else {
+      audioFilterNote.textContent = 'Radio V2 di browser: suara panel radio dibisukan dan diputar halaman ini lewat filter. '
+        + 'Volume diatur slider volume halaman ini. Rekaman dan Whisper tetap memakai suara asli.';
+    }
   }
 
   function applyFilterSettings(next){
@@ -1812,6 +1822,9 @@
     renderFilterControls();
     if (radioFilter) radioFilter.apply(next);
     renderFilterStatus(radioFilter ? radioFilter.status : null);
+    renderFilterNote();
+    // Radio V2 di browser: nyala/mati filter memindahkan pemutaran antara halaman ini dan panel radio.
+    syncListenerMonitor();
   }
   function changeFilter(patch){
     applyFilterSettings({ ...radioFilterSettings, ...patch, preset: 'custom' });
@@ -1825,7 +1838,9 @@
       : { ...FILTER_PRESETS.standard, preset: 'standard' };
     renderFilterControls();
     renderFilterStatus(null);
+    renderFilterNote();
     if (radioFilter) radioFilter.apply(radioFilterSettings);
+    syncListenerMonitor();
 
     filterPresets.addEventListener('click', (e) => {
       const chip = e.target.closest('[data-filter-preset]');
@@ -1844,9 +1859,13 @@
   radioSourceSelect.addEventListener('change', renderFilterNote);
   renderFilterNote();
   // Untuk pengujian/diagnosis: rantai filter yang sedang aktif.
-  window.radioAudioFilterInfo = () => (radioFilter
-    ? { settings: radioFilterSettings, status: radioFilter.status, chain: radioFilter.chainNames, sampleRate: radioFilter.ctx.sampleRate }
-    : { settings: radioFilterSettings, status: null });
+  window.radioAudioFilterInfo = () => ({
+    ...(radioFilter
+      ? { settings: radioFilterSettings, status: radioFilter.status, chain: radioFilter.chainNames, sampleRate: radioFilter.ctx.sampleRate }
+      : { settings: radioFilterSettings, status: null }),
+    // Radio V2 di browser: apakah halaman ini yang memutar suara kit, dan berapa potongan sudah diputar.
+    listener: { viaFilter: listenerMonitorViaFilter, chunksPlayed: listenerMonitorChunks, ctxState: web888AudioCtx ? web888AudioCtx.state : null },
+  });
   let scopeZoom = zoomSlider ? Number(zoomSlider.value) : 1;
   let scopeContrast = contrastSlider ? Number(contrastSlider.value) : 1;
 
@@ -2787,6 +2806,15 @@
   let listenerReceiverRev = null;  // tune.receiverRev terakhir dari receiver:status kit
   let listenerSweepActive = false; // wide scan sedang berjalan (fase selain idle)
   let listenerKitSweepRange = null; // rentang pindai terakhir yang dilaporkan kit
+  // Filter suara untuk Radio V2 di browser: selama filter nyala, speaker panel radio
+  // dibisukan (host:output-mute) dan halaman ini memutar receiver:audio lewat
+  // rantai filter yang sama dengan Radio V1 (web888AudioCtx + web888MonitorInput).
+  let listenerMonitorViaFilter = false;
+  let listenerAudioNextStart = 0;
+  let listenerMonitorChunks = 0;     // diagnosis: potongan receiver:audio yang diputar lewat filter
+  let listenerVolumeSent = null;     // volume VFO terakhir yang dikirim ke kit
+  const LISTENER_MONITOR_LEAD_S = 0.08;      // jarak aman di depan "sekarang" untuk jitter postMessage
+  const LISTENER_MONITOR_MAX_AHEAD_S = 0.4;  // antrian lebih panjang dari ini dibuang (delay tidak menumpuk)
 
   // Perangkat "HackRF WebUSB" di dropdown Radio Input Device (WEBUSB_VIRTUAL_DEVICE_INDEX backend).
   const WEBUSB_DEVICE_INDEX = '-2';
@@ -2825,8 +2853,13 @@
       listenerClient.on('sweep', onListenerSweep);
       listenerClient.on('markers', onListenerMarkers);
       listenerClient.on('audio', onListenerAudio);
-      // Kit yang dimuat ulang mulai menghitung receiverRev dari awal lagi.
-      listenerClient.on('hello', () => { listenerReceiverRev = null; });
+      listenerClient.on('hello', () => {
+        // Kit yang dimuat ulang mulai menghitung receiverRev dari awal lagi.
+        listenerReceiverRev = null;
+        // Kit lupa status bisu, langganan dan volume VFO setelah reload: kirim ulang.
+        listenerVolumeSent = null;
+        if (listenerMonitorViaFilter) listenerApplyMonitor();
+      });
       spectrumStatusPill.textContent = 'Memuat panel radio…';
       listenerClient.ready.then((hello) => {
         if (listenerActive) spectrumStatusPill.textContent = 'Belum tersambung';
@@ -2846,10 +2879,11 @@
   // ini tidak berlangganan spektrum RX. Langganan dibuka hanya untuk:
   //   - grafik pindai lebar di tab Spectrum (receiver:sweep butuh spectrum: true),
   //     selama scan berjalan;
-  //   - audio, selama rekaman Auto Translate memakai Radio V2 di browser.
+  //   - audio, selama rekaman Auto Translate memakai Radio V2 di browser, atau
+  //     selama filter suara nyala (halaman ini yang memutar suaranya).
   function listenerUpdateSubscription(){
     if (!listenerClient) return Promise.resolve(null);
-    const subscription = { spectrum: listenerSweepActive, audio: webusbForwarding, bins: 512, fps: 5 };
+    const subscription = { spectrum: listenerSweepActive, audio: webusbForwarding || listenerMonitorViaFilter, bins: 512, fps: 5 };
     return listenerClient.subscribe(subscription).then((r) => {
       if (!r.ok) reportListener('langganan audio', r);
       return r;
@@ -2868,7 +2902,9 @@
       activeSpectrumSource = null;
       freqOffsetHz = 0; // frekuensi kit sudah frekuensi tampil (termasuk Freq Shift-nya sendiri)
       ensureListener();
+      syncListenerMonitor();
     } else {
+      syncListenerMonitor();
       if (listenerClient?.status?.running) listenerClient.stop().then((r) => reportListener('hentikan RX', r));
       setListenerScopeUi(false, false);
       loadFreqOffset();
@@ -2883,12 +2919,67 @@
     spectrumStatusPill.classList.toggle('busy', running);
   }
 
+  /* ---- Filter suara untuk Radio V2 di browser ---- */
+  // Dipanggil saat sumber radio atau nyala/mati filter berubah.
+  function syncListenerMonitor(){
+    const via = listenerActive && radioFilterOn();
+    if (via) ensureWeb888AudioCtx(); // dalam klik operator, AudioContext langsung jalan
+    if (via === listenerMonitorViaFilter) return;
+    listenerMonitorViaFilter = via;
+    listenerAudioNextStart = 0;
+    if (!listenerClient) return; // receiver:hello nanti yang mengirim
+    listenerApplyMonitor();
+    if (listenerActive) log(via
+      ? 'Radio V2: suara panel radio diputar lewat filter suara.'
+      : 'Radio V2: filter suara mati, panel radio memutar suaranya sendiri.', 'info');
+  }
+
+  // Bisukan/pulihkan speaker kit, atur langganan audio dan volume VFO sesuai mode.
+  function listenerApplyMonitor(){
+    if (!listenerClient) return;
+    const via = listenerMonitorViaFilter;
+    listenerClient.outputMute(via).then((r) => { if (!r.ok) reportListener(via ? 'bisukan speaker panel' : 'pulihkan speaker panel', r); });
+    listenerUpdateSubscription();
+    listenerSendVolume();
+  }
+
+  // Lewat filter: VFO di volume penuh (mix kit tanpa pelemahan, volume diatur
+  // filter halaman ini). Tanpa filter: slider volume halaman ini = volume VFO.
+  function listenerSendVolume(){
+    if (!listenerActive || !listenerClient) return;
+    const volume = listenerMonitorViaFilter ? 100 : (volumeSlider ? clamp(Number(volumeSlider.value), 0, 100) : 100);
+    if (volume === listenerVolumeSent) return;
+    listenerVolumeSent = volume;
+    listenerClient.vfo({ volume }).then((r) => { if (!r.ok) listenerVolumeSent = null; });
+  }
+
+  // receiver:audio (48 kHz, 100 ms per potongan) -> filter suara -> speaker.
+  function playListenerMonitor(chunk){
+    const ctx = web888AudioCtx;
+    const samples = chunk.samples;
+    if (!ctx || !web888MonitorInput || !samples || !samples.length) return;
+    if (ctx.state !== 'running') return; // ditahan browser; Mulai RX / Dengarkan menyalakannya
+    const buffer = ctx.createBuffer(1, samples.length, chunk.sampleRateHz || 48000);
+    buffer.copyToChannel(samples, 0);
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+    src.connect(web888MonitorInput);
+    const now = ctx.currentTime;
+    let startAt = listenerAudioNextStart;
+    // Mulai baru, sampel hilang, tertinggal, atau antrian terlalu panjang: jadwal ulang dari sekarang.
+    if (chunk.gap || startAt < now || startAt - now > LISTENER_MONITOR_MAX_AHEAD_S) startAt = now + LISTENER_MONITOR_LEAD_S;
+    src.start(startAt);
+    listenerAudioNextStart = startAt + buffer.duration;
+    listenerMonitorChunks++;
+  }
+
   /* ---- Perintah ---- */
   function listenerModeFromUi(){
     return LISTENER_MODE_FROM_UI[modeSelect.value] || 'nfm';
   }
 
   async function listenerStart(){
+    if (listenerMonitorViaFilter) ensureWeb888AudioCtx(); // masih di dalam klik operator
     const client = await ensureListener();
     listenerSendGains(true);
     const hz = Math.round(currentFreq);
@@ -2900,6 +2991,8 @@
       vfoHz: hz,
     });
     reportListener(listenerMockInput.checked ? 'mulai RX (Mock SDR)' : 'mulai RX', result);
+    // Pastikan volume VFO sesuai mode speaker setelah RX (dan VFO-nya) mulai.
+    if (result.ok){ listenerVolumeSent = null; listenerSendVolume(); }
   }
 
   async function listenerStop(){
@@ -2965,6 +3058,7 @@
   }
 
   $('listenerListenBtn').addEventListener('click', async () => {
+    if (listenerMonitorViaFilter) ensureWeb888AudioCtx();
     const client = await ensureListener();
     reportListener('dengarkan', await client.listen(true));
   });
@@ -3007,11 +3101,8 @@
   });
 
   if (volumeSlider){
-    const sendVolume = () => {
-      if (listenerActive && listenerClient) listenerClient.vfo({ volume: clamp(Number(volumeSlider.value), 0, 100) });
-    };
-    volumeSlider.addEventListener('input', sendVolume);
-    if (volumeIcon) volumeIcon.addEventListener('click', sendVolume);
+    volumeSlider.addEventListener('input', listenerSendVolume);
+    if (volumeIcon) volumeIcon.addEventListener('click', listenerSendVolume);
   }
 
   /* ---- Pesan dari kit ---- */
@@ -3043,6 +3134,9 @@
       ['Sample rate', status.sampleRateHz ? `${status.sampleRateHz / 1e6} MSPS` : '—'],
       ['VFO', vfo ? `${listenerMhz(vfo.frequencyHz)} · ${vfo.mode.toUpperCase()} · ${vfo.enabled ? 'terdengar' : 'bisu'}` : '—'],
       ['Audio', { none: 'mati', suspended: 'ditahan browser', running: 'aktif' }[status.audio] || status.audio],
+      ['Speaker', listenerMonitorViaFilter
+        ? `lewat filter suara${web888AudioCtx && web888AudioCtx.state !== 'running' ? ' · ditahan browser (tekan Mulai RX/Dengarkan)' : ''}`
+        : 'panel radio (tanpa filter)'],
       ['Squelch', status.squelchOpen ? 'terbuka' : 'tertutup'],
       ['Pindai lebar', `${{ idle: 'berhenti', starting: 'memulai', active: 'berjalan', stopping: 'menghentikan' }[status.sweep.phase] || status.sweep.phase} · ${listenerMhz(status.sweep.startHz)} – ${listenerMhz(status.sweep.stopHz)}`],
       ['Error', status.error ? (LISTENER_STATUS_ERROR_TEXT[status.error.code] || status.error.code) : '—'],
@@ -3185,6 +3279,7 @@
 
   /* ---- Audio kit -> backend (POST /webusb/audio) untuk Rekam & Translate ---- */
   function onListenerAudio(chunk){
+    if (listenerMonitorViaFilter) playListenerMonitor(chunk);
     if (!webusbForwarding) return;
     const samples = chunk.samples;
     const pcm = new Int16Array(samples.length);
